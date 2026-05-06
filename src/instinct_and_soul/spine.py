@@ -123,6 +123,18 @@ class VersionStore:
             }, f, indent=2)
         return path
 
+    def save_seeds(self, creature):
+        # Snapshot the creature's editable inputs into the session dir so
+        # we can correlate behaviour changes to edits made during development.
+        for name, content in (
+            ("character.md", creature.character),
+            ("system_prompt.md", creature.system_prompt),
+            ("seed_experience.md", creature.seed_experience),
+            ("seed_instinct.py", creature.seed_instinct),
+        ):
+            with open(os.path.join(self.base, name), "w") as f:
+                f.write(content)
+
     def next_seq(self):
         self.seq += 1
         return self.seq
@@ -211,6 +223,7 @@ class SpineApp(App):
 
         # save session config and initial state
         self.store.save_session_config(creature.system_prompt, creature.character, self.resumed_from)
+        self.store.save_seeds(creature)
         seq = self.store.next_seq()
         self.instinct_version = seq
         self.store.save_instinct(seq, self.current_instinct)
