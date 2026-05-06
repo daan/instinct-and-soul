@@ -25,7 +25,7 @@ To run one, point the spine at it:
 spine creatures/touchy-pebble
 ```
 
-To make a new variant — same body, different goal — copy the folder and edit `character.md` and `seed_soul.md`.
+To make a new variant — same body, different goal — copy the folder and edit `character.md` and `seed_experience.md`.
 
 ## System Architecture
 
@@ -81,7 +81,7 @@ The LLM writes the complete instinct coroutine that runs on the microcontroller.
 
 ### What the Soul Is Told
 
-The system prompt provides the hardware truth: pin assignments, sensor specifications, actuator capabilities, and what the boot runtime provides in scope. The reflection prompt provides the character prompt (the desire), the current soul.md, the current instinct code, the accumulated messages from the instinct since the last reflection, and whether the previous instinct code crashed.
+The system prompt provides the hardware truth: pin assignments, sensor specifications, actuator capabilities, and what the boot runtime provides in scope. The reflection prompt provides the character prompt (the desire), the current experience.md, the current instinct code, the accumulated messages from the instinct since the last reflection, and whether the previous instinct code crashed.
 
 The soul interprets the messages through the lens of its character and decides whether to evolve the instinct, update its memory, or leave things as they are.
 
@@ -93,14 +93,14 @@ The system uses WebSocket for all communication between the instinct and the spi
 
 **Spine to instinct.** The spine sends new instinct code as a plain string over the WebSocket connection. The boot runtime receives it, cancels the running coroutine, exec's the new code, and starts the new `run()` task. This is the only message the spine sends to the board.
 
-**Spine to soul.** The spine calls the Claude API, passing the character prompt, the current soul.md, the current instinct code, the accumulated messages from the instinct since the last reflection, and whether the previous code crashed.
+**Spine to soul.** The spine calls the Claude API, passing the character prompt, the current experience.md, the current instinct code, the accumulated messages from the instinct since the last reflection, and whether the previous code crashed.
 
-**Soul to spine.** The soul must return an intent message: a short natural-language statement describing what it observed and what it decided, like a commit summary. This is displayed on the spine's screen and logged. Optionally, the soul may also return updated instinct code, an updated soul.md, or both. If new instinct code is returned, the spine deploys it to the board. If a new soul.md is returned, the spine stores it for the next reflection cycle.
+**Soul to spine.** The soul must return an intent message: a short natural-language statement describing what it observed and what it decided, like a commit summary. This is displayed on the spine's screen and logged. Optionally, the soul may also return updated instinct code, an updated experience.md, or both. If new instinct code is returned, the spine deploys it to the board. If a new experience.md is returned, the spine stores it for the next reflection cycle.
 
-### The Soul File
+### The Experience File
 
-The soul.md file accumulates the object's learned personality in natural language, written and updated by the LLM during reflection. It contains the character's own interpretation of its sensory experience, discovered preferences, and strategies for getting what it wants. It is maintained on the spine and passed to the LLM during reflection; it is never sent to the board.
+The experience.md file accumulates the object's lived experience in natural language, written and updated by the soul during reflection. It contains the character's own interpretation of its sensory experience, discovered preferences, and strategies for getting what it wants. It is maintained on the spine and passed to the soul during reflection; it is never sent to the board.
 
 ### Versioning
 
-The spine saves every deployed instinct.py, every soul.md update, every message that triggered a reflection, and the soul's full response including the intent message. The complete history is timestamped and replayable, written under the creature's own `logs/<session>/` directory. This log is the primary research data: a full trace of the object's evolving inner life alongside the sensor record of its interaction with the world.
+The spine saves every deployed instinct.py, every experience.md update, every message that triggered a reflection, and the soul's full response including the intent message. The complete history is timestamped and replayable, written under the creature's own `logs/<session>/` directory. This log is the primary research data: a full trace of the object's evolving inner life alongside the sensor record of its interaction with the world.

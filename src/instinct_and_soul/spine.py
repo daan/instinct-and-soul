@@ -7,7 +7,7 @@ calls Claude for reflection, and deploys updated instinct code back.
 A creature is a folder under creatures/ containing:
   system_prompt.md   — hardware truth, given to Claude as system prompt
   character.md       — the creature's desire / goal
-  seed_soul.md       — initial personality, used on first session
+  seed_experience.md — initial personality, used on first session
   seed_instinct.py   — initial instinct code, deployed to the body
   logs/              — per-session subfolders written by the spine
 
@@ -43,7 +43,7 @@ class Creature:
         self.name = os.path.basename(self.path)
         self.system_prompt = self._read("system_prompt.md")
         self.character = self._read("character.md").strip()
-        self.seed_soul = self._read("seed_soul.md")
+        self.seed_experience = self._read("seed_experience.md")
         self.seed_instinct = self._read("seed_instinct.py")
         self.logs_dir = os.path.join(self.path, "logs")
 
@@ -77,34 +77,38 @@ def find_last_session(logs_dir):
 
 
 def load_last_state(session_dir):
-    """Load the final soul and instinct from a session directory."""
-    soul = None
+    """Load the final experience and instinct from a session directory."""
+    experience = None
     instinct = None
 
-    soul_files = sorted(glob.glob(os.path.join(session_dir, "soul", "*.md")))
-    if soul_files:
-        with open(soul_files[-1]) as f:
-            soul = f.read()
+    # Prefer the new "experience" subdir; fall back to legacy "soul" so that
+    # sessions written before the rename can still be resumed.
+    exp_files = sorted(glob.glob(os.path.join(session_dir, "experience", "*.md")))
+    if not exp_files:
+        exp_files = sorted(glob.glob(os.path.join(session_dir, "soul", "*.md")))
+    if exp_files:
+        with open(exp_files[-1]) as f:
+            experience = f.read()
 
     instinct_files = sorted(glob.glob(os.path.join(session_dir, "instinct", "*.py")))
     if instinct_files:
         with open(instinct_files[-1]) as f:
             instinct = f.read()
 
-    return soul, instinct
+    return experience, instinct
 
 
 # ── Versioning ─────────────────────────────────────────────────────────────
 
 class VersionStore:
-    """Saves instinct, soul, and reflection files to a session directory."""
+    """Saves instinct, experience, and reflection files to a session directory."""
 
     def __init__(self, logs_dir):
         session_id = time.strftime("%Y%m%d_%H%M%S")
         self.base = os.path.join(logs_dir, session_id)
         self.session_id = session_id
         self.seq = 0
-        for subdir in ("instinct", "soul", "reflections", "crashes"):
+        for subdir in ("instinct", "experience", "reflections", "crashes"):
             os.makedirs(os.path.join(self.base, subdir), exist_ok=True)
 
     def save_session_config(self, system_prompt, character, resumed_from=None):
@@ -129,8 +133,8 @@ class VersionStore:
             f.write(code)
         return path
 
-    def save_soul(self, seq, text):
-        path = os.path.join(self.base, "soul", "{:03d}_{}.md".format(seq, int(time.time())))
+    def save_experience(self, seq, text):
+        path = os.path.join(self.base, "experience", "{:03d}_{}.md".format(seq, int(time.time())))
         with open(path, "w") as f:
             f.write(text)
         return path
@@ -183,23 +187,23 @@ class SpineApp(App):
         self.client = anthropic.AsyncAnthropic()
         self.store = VersionStore(creature.logs_dir)
 
-        # soul state — resume or seed
-        self.current_soul = creature.seed_soul
+        # experience state — resume or seed
+        self.current_experience = creature.seed_experience
         self.current_instinct = creature.seed_instinct
         self.resumed_from = None
 
         if resume:
             last = find_last_session(creature.logs_dir)
             if last:
-                soul, instinct = load_last_state(last)
-                if soul:
-                    self.current_soul = soul
+                experience, instinct = load_last_state(last)
+                if experience:
+                    self.current_experience = experience
                 if instinct:
                     self.current_instinct = instinct
                 self.resumed_from = os.path.basename(last)
 
         self.instinct_version = 0
-        self.soul_version = 0
+        self.experience_version = 0
         self.messages_since_last = []
         self.last_crashed = False
         self.last_crash_msg = ""
@@ -211,8 +215,8 @@ class SpineApp(App):
         self.instinct_version = seq
         self.store.save_instinct(seq, self.current_instinct)
         seq = self.store.next_seq()
-        self.soul_version = seq
-        self.store.save_soul(seq, self.current_soul)
+        self.experience_version = seq
+        self.store.save_experience(seq, self.current_experience)
 
     def compose(self) -> ComposeResult:
         yield Static("● disconnected", id="status")
@@ -309,13 +313,13 @@ class SpineApp(App):
 
         reflection_prompt = (
             "<character>{character}</character>\n"
-            "<soul>{soul}</soul>\n"
+            "<experience>{experience}</experience>\n"
             "<instinct>{instinct}</instinct>\n"
             "<crashed>{crashed}</crashed>\n"
             "<messages>\n{messages}\n</messages>"
         ).format(
             character=self.creature.character,
-            soul=self.current_soul,
+            experience=self.current_experience,
             instinct=self.current_instinct,
             crashed=crashed_xml,
             messages=messages_xml,
@@ -334,7 +338,7 @@ class SpineApp(App):
             reply = response.content[0].text
 
             intent = extract_xml_tag(reply, "intent")
-            new_soul = extract_xml_tag(reply, "soul")
+            new_experience = extract_xml_tag(reply, "experience")
             new_instinct = extract_xml_tag(reply, "instinct")
 
             if not intent:
@@ -360,7 +364,7 @@ class SpineApp(App):
                 "crashed": crashed,
                 "intent": intent,
                 "instinct_changed": new_instinct is not None,
-                "soul_changed": new_soul is not None,
+                "experience_changed": new_experience is not None,
                 "prompt": reflection_prompt,
                 "response": reply,
             }
@@ -376,13 +380,13 @@ class SpineApp(App):
                     await self.board_ws.send(new_instinct)
                     self.log_msg("deployed new instinct v{}".format(iseq), style="cyan")
 
-            if new_soul is not None:
-                self.current_soul = new_soul
-                sseq = self.store.next_seq()
-                self.soul_version = sseq
-                self.store.save_soul(sseq, new_soul)
-                reflection["soul_version_out"] = sseq
-                self.log_msg("updated soul v{}".format(sseq), style="cyan")
+            if new_experience is not None:
+                self.current_experience = new_experience
+                eseq = self.store.next_seq()
+                self.experience_version = eseq
+                self.store.save_experience(eseq, new_experience)
+                reflection["experience_version_out"] = eseq
+                self.log_msg("updated experience v{}".format(eseq), style="cyan")
 
             self.store.save_reflection(seq, reflection)
 
@@ -421,7 +425,7 @@ def main():
     parser.add_argument("creature_path",
                         help="Path to the creature directory (e.g. creatures/touchy-pebble)")
     parser.add_argument("--resume", action="store_true",
-                        help="Resume from the last session's final soul/instinct")
+                        help="Resume from the last session's final experience/instinct")
     args = parser.parse_args()
     creature = Creature(args.creature_path)
     # mouse=False disables Textual's mouse capture so the terminal can

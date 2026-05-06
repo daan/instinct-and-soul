@@ -90,7 +90,7 @@ logs/{object_id}/
 │   ├── 001_1709312400.py
 │   ├── 002_1709312430.py
 │   └── ...
-├── soul/
+├── experience/
 │   ├── 001_1709312400.md
 │   ├── 002_1709312430.md
 │   └── ...
@@ -120,8 +120,8 @@ Each reflection JSON contains:
   "intent": "they picked me up and i felt hand tremor — my buzz seemed to keep them engaged",
   "instinct_changed": true,
   "instinct_version_out": 2,
-  "soul_changed": true,
-  "soul_version_out": 2
+  "experience_changed": true,
+  "experience_version_out": 2
 }
 ```
 
@@ -159,7 +159,7 @@ The soul responds in XML:
 ```xml
 <response>
   <intent>short natural-language statement of what was observed and decided</intent>
-  <soul>full updated soul.md, if changed</soul>
+  <experience>full updated experience.md, if changed</experience>
   <instinct>full updated instinct.py, if changed</instinct>
 </response>
 ```
@@ -210,13 +210,13 @@ Your instinct code should follow this structure:
           check_for_update()
           time.sleep_ms(100)
 
-When you receive a reflection, you will be shown: your current instinct.py, your accumulated soul.md, the messages your instinct code sent since your last reflection, and whether your previous code crashed.
+When you receive a reflection, you will be shown: your current instinct.py, your accumulated experience.md, the messages your instinct code sent since your last reflection, and whether your previous code crashed.
 
 You must respond in this format:
 
 <response>
   <intent>one or two sentences: what you noticed and what you decided, in your own voice</intent>
-  <soul>your full updated soul.md, only if you want to change it</soul>
+  <experience>your full updated experience.md, only if you want to change it</experience>
   <instinct>your full updated instinct.py, only if you want to change it</instinct>
 </response>
 
@@ -244,7 +244,7 @@ You like being touched.
 
 ```
 <character>{character prompt}</character>
-<soul>{current soul.md}</soul>
+<experience>{current experience.md}</experience>
 <instinct>{current instinct.py}</instinct>
 <crashed>{true|false, and traceback if true}</crashed>
 <messages>
@@ -366,7 +366,7 @@ except Exception as e:
         time.sleep_ms(100)
 ```
 
-## Seed soul.md
+## Seed experience.md
 
 ```
 I am a pebble. Hard, smooth, palm-sized.

@@ -162,7 +162,7 @@ Each `test/<hw>/API.md` accumulates the verified API as you probe peripherals �
    - `main.py` — MicroPython runtime. Easiest start: copy from a similar body (`creatures/touchy-pebble/main.py` for Xiao-class, `creatures/sticks3/main.py` for M5-class) and edit pin assignments, WiFi config, scope dict.
    - `system_prompt.md` — hardware truth Claude sees as system prompt.
    - `character.md` — one-line desire. e.g. `You like being touched.`
-   - `seed_soul.md` — initial personality, written from the body's first-person view.
+   - `seed_experience.md` — initial personality, written from the body's first-person view.
    - `seed_instinct.py` — initial `async def run()` coroutine. Usually a sensor-streamer with motors off.
    - `recipes.py` — start empty (`RECIPES = {}`), add as you tune.
    - `tune.py` — copy from a similar body and rename the class + `STATUS_LABEL`.

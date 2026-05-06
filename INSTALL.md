@@ -25,7 +25,7 @@ Each creature lives under `creatures/<name>/` and contains:
 main.py            # MicroPython runtime that runs on the body
 system_prompt.md   # hardware truth, used as Claude's system prompt
 character.md       # one-line desire, e.g. "You like being touched."
-seed_soul.md       # initial personality
+seed_experience.md       # initial personality
 seed_instinct.py   # initial instinct code, deployed on first connect
 logs/              # per-session subfolders, written by the spine
 ```
@@ -50,7 +50,7 @@ flash creatures/cores3                          # auto-detects /dev/cu.usbmodem*
 flash creatures/cores3 --port /dev/cu.usbmodem3101
 ```
 
-To make a new variant, copy a creature folder and edit `character.md` / `seed_soul.md`.
+To make a new variant, copy a creature folder and edit `character.md` / `seed_experience.md`.
 
 ## prepare the xiao (creatures/touchy-pebble)
 
