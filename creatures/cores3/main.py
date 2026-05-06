@@ -142,7 +142,7 @@ class WebSocket:
         response = b""
         sock.setblocking(True)
         while b"\r\n\r\n" not in response:
-            chunk = sock.recv(256)
+            chunk = sock.recv(1)
             if not chunk:
                 raise OSError("ws: handshake failed (closed)")
             response += chunk
