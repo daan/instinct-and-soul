@@ -69,6 +69,12 @@ class TuneAppBase(App):
         self.set_interval(1, self.update_status)
         suffix = " — {}".format(self.STATUS_LABEL) if self.STATUS_LABEL else ""
         self.log_msg("tuner: listening on port {}{}".format(PORT, suffix))
+        # mouse=False means clicks can't focus widgets, so set focus on the
+        # input field at startup. Keystrokes go straight to the prompt.
+        try:
+            self.query_one("#input", Input).focus()
+        except Exception:
+            pass
 
     def log_msg(self, msg, style=""):
         ts = time.strftime("%H:%M:%S")
