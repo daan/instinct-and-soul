@@ -168,6 +168,11 @@ class TuneAppBase(App):
             if self._ws_server is not None:
                 self._ws_server.close()
 
+    def run(self, *args, mouse: bool = False, **kwargs):
+        # mouse=False disables Textual's mouse capture so the terminal
+        # handles drag-selection — lets you copy text out of the log panel.
+        return super().run(*args, mouse=mouse, **kwargs)
+
 
 def format_recipe(spec, **kwargs):
     """Format a recipe template with kwargs.

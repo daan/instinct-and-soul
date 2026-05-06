@@ -2,7 +2,7 @@
 test_imu/main.py — IMU probe for the M5StickS3.
 
 Flash with:
-    make flash CREATURE=test/STICKS3/test_imu PORT=/dev/tty.usbmodem...
+    flash test/STICKS3/test_imu
 
 Same idea as test/CORES3/test_imu but laid out for the StickS3's 135 × 240
 portrait LCD. Reads accel/gyro/mag from M5.Imu at ~10 Hz, prints to serial,

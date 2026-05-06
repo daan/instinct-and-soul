@@ -4,7 +4,7 @@ test_proximity/main.py — ALS (ambient light + proximity) probe for CORES3.
 The CORES3 has an LTR-553ALS-WA combo sensor exposed via M5.Als.
 
 Flash with:
-    make flash CREATURE=test/CORES3/test_proximity PORT=/dev/tty.usbmodem...
+    flash test/CORES3/test_proximity
 
 What it does:
 - Reads ambient light + proximity at ~10 Hz.

@@ -2,7 +2,7 @@
 
 Source: live introspection on a physical StickS3 running UIFlow MicroPython (firmware reports `MicroPython v1.27.0-dirty` on `esp32`, board id `26`).
 
-This file is the source-of-truth for crafting / updating `creatures/m5sticks3/system_prompt.md`. Add a section per peripheral as you probe it.
+This file is the source-of-truth for crafting / updating `creatures/sticks3/system_prompt.md`. Add a section per peripheral as you probe it.
 
 ## Module structure
 
@@ -47,7 +47,7 @@ Same drawing methods as CORES3 (`drawPixel`, `drawLine`, `drawCircle`, `drawStri
 
 ## Speaker — gotcha (preserved from old firmware)
 
-A single `Speaker.tone(freq, ms)` call does **not** play for the full duration on the StickS3. Tones must be driven in a tight loop with `M5.update()` ticking the audio engine, per the original m5sticks3 creature pattern:
+A single `Speaker.tone(freq, ms)` call does **not** play for the full duration on the StickS3. Tones must be driven in a tight loop with `M5.update()` ticking the audio engine, per the original sticks3 creature pattern:
 
 ```python
 M5.Speaker.begin()
@@ -77,7 +77,7 @@ This is the **opposite of CORES3**, where a single `tone()` call plays through. 
 
 ## Vibration
 
-No built-in vibrator on the bare StickS3 (`M5.Power.setVibration()` is a no-op). The legacy `creatures/m5sticks3/main.py` drove a vibration HAT via raw PWM on `Pin(0)`. A different vibration accessory will live on a different pin — leave this section TODO until a specific vibrator is chosen.
+No built-in vibrator on the bare StickS3 (`M5.Power.setVibration()` is a no-op). The legacy `creatures/sticks3/main.py` drove a vibration HAT via raw PWM on `Pin(0)`. A different vibration accessory will live on a different pin — leave this section TODO until a specific vibrator is chosen.
 
 ## Not present on this board
 

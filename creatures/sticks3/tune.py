@@ -1,25 +1,17 @@
 """
-tune.py — interactive tuner for the m5sticks3 creature.
+tune.py — interactive tuner for the sticks3 creature.
 
 This body has no motor — only IMU + speaker. Commands are limited to
 sound generation and sensor logging.
 
 Run:
-    python creatures/m5sticks3/tune.py
+    tune creatures/sticks3
 """
-
-import os
-import sys
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
-sys.path.insert(0, HERE)
-sys.path.insert(0, ROOT)
 
 from textual.app import ComposeResult
 from textual.widgets import Input, RichLog, Static
 
-from harness import TuneAppBase, format_recipe
+from instinct_and_soul.harness import TuneAppBase, format_recipe
 from recipes import RECIPES, INSTINCT_IDLE
 
 
@@ -34,7 +26,7 @@ def clamp_vol(v):
 
 class M5StickS3Tuner(TuneAppBase):
     INITIAL_INSTINCT = INSTINCT_IDLE
-    STATUS_LABEL = "m5sticks3"
+    STATUS_LABEL = "sticks3"
 
     def compose(self) -> ComposeResult:
         yield Static("● disconnected", id="status")

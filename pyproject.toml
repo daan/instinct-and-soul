@@ -12,3 +12,12 @@ dependencies = [
     "textual>=8.0.2",
     "websockets>=16.0",
 ]
+
+[project.scripts]
+spine = "instinct_and_soul.spine:main"
+tune = "instinct_and_soul.tune:main"
+flash = "instinct_and_soul.flash:main"
+
+[build-system]
+requires = ["uv_build>=0.8.11,<0.9.0"]
+build-backend = "uv_build"

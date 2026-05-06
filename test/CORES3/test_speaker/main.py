@@ -2,7 +2,7 @@
 test_speaker/main.py — speaker probe for CORES3.
 
 Flash with:
-    make flash CREATURE=test/CORES3/test_speaker PORT=/dev/tty.usbmodem...
+    flash test/CORES3/test_speaker
 
 What it does:
 - Plays an ascending chirp (200 Hz -> 2000 Hz, 100 Hz steps).

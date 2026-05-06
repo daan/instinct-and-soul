@@ -4,9 +4,13 @@ This repo has three executables and two dev workflows.
 
 ## Executables
 
-- `spine.py creatures/<name>` — production: Claude reflects on board messages and rewrites instinct code.
-- `creatures/<name>/tune.py` — interactive tuner: you type recipe names, the tuner deploys instinct code by hand. Same WebSocket protocol as the spine; substitutes manual control for the LLM loop.
-- `creatures/<name>/main.py` — the MicroPython runtime that runs *on the board*. Connects to whichever laptop process is listening on port 8765 (spine or tuner).
+After `uv sync`, three console scripts are available:
+
+- `spine creatures/<name>` — production: Claude reflects on board messages and rewrites instinct code.
+- `tune creatures/<name>` — interactive tuner: you type recipe names, the tuner deploys instinct code by hand. Same WebSocket protocol as the spine; substitutes manual control for the LLM loop.
+- `flash creatures/<name>` — copy `<name>/main.py` onto a USB-attached board and reset.
+
+Plus the on-device `creatures/<name>/main.py` MicroPython runtime that connects to whichever laptop process is listening on port 8765 (spine or tuner).
 
 The spine and the tuners are mutually exclusive — only one can hold port 8765 at a time. Switch by quitting one and starting the other; the board reconnects automatically.
 
@@ -19,19 +23,20 @@ When to use:
 - Pushing a self-contained one-shot test program that runs on-device.
 
 ```
-make flash CREATURE=creatures/touchy-pebble PORT=/dev/tty.usbmodem1101
-make repl PORT=/dev/tty.usbmodem1101    # interactive shell
-make reset PORT=/dev/tty.usbmodem1101   # soft reset
-make ls PORT=/dev/tty.usbmodem1101      # list files on board
+flash creatures/touchy-pebble                          # auto-detects /dev/cu.usbmodem*
+flash creatures/touchy-pebble --port /dev/cu.usbmodem1101
+mpremote connect /dev/cu.usbmodem1101 repl             # interactive shell
+mpremote connect /dev/cu.usbmodem1101 reset            # soft reset
+mpremote connect /dev/cu.usbmodem1101 ls               # list files on board
 ```
 
-`make flash` copies `<creature>/main.py` to `:main.py` on the device and resets.
+`flash` copies `<creature>/main.py` to `:main.py` on the device and resets.
 
 ### Recovering a hung M5StickS3
 
-`creatures/m5sticks3/main.py:34-44` includes a 3-second window at boot where holding **BtnA** drops the device into REPL instead of starting `main()`. Use this when the runtime hangs on a blocking call.
+`creatures/sticks3/main.py:34-44` includes a 3-second window at boot where holding **BtnA** drops the device into REPL instead of starting `main()`. Use this when the runtime hangs on a blocking call.
 
-For other hardware lock-ups: hold the power button for ~6 seconds, short-press to power back on, then `make ls` immediately while the device is in its idle window.
+For other hardware lock-ups: hold the power button for ~6 seconds, short-press to power back on, then `mpremote connect /dev/<port> ls` immediately while the device is in its idle window.
 
 ## Workflow B: Interactive tuner
 
@@ -41,9 +46,7 @@ When to use:
 - Validating that a body responds correctly to a known input.
 
 ```
-make tune CREATURE=creatures/touchy-pebble
-# or directly:
-python creatures/touchy-pebble/tune.py
+tune creatures/touchy-pebble
 ```
 
 The tuner opens a textual UI on port 8765. Once the board connects, type a recipe:
@@ -55,7 +58,7 @@ sweep
 imutune
 ```
 
-Recipes live in `creatures/<name>/recipes.py` as a dict of `{name: {"args": [...], "code": "..."}}`. Each tuner has body-specific commands — `creatures/m5sticks3/tune.py` has `tone` and `chirp` (speaker), `creatures/touchy-pebble/tune.py` has `mix` and `ripple` (dual motors).
+Recipes live in `creatures/<name>/recipes.py` as a dict of `{name: {"args": [...], "code": "..."}}`. Each tuner has body-specific commands — `creatures/sticks3/tune.py` has `tone` and `chirp` (speaker), `creatures/touchy-pebble/tune.py` has `mix` and `ripple` (dual motors).
 
 ### Adding a recipe to an existing body
 
@@ -98,20 +101,18 @@ test/
         └── main.py
 ```
 
-The `make flash` target works against any folder containing a `main.py`, so:
+The `flash` script works against any folder containing a `main.py`, so:
 
 ```
-make flash CREATURE=test/CORES3/test_imu PORT=/dev/tty.usbmodem...
+flash test/CORES3/test_imu
 ```
-
-(The `CREATURE=` variable name reads slightly wrong here — it's just a path arg.)
 
 ### Reading serial output
 
 After flashing, the device runs `main.py` automatically. Watch its `print()` calls:
 
 ```
-make repl PORT=/dev/tty.usbmodem...   # interactive
+mpremote connect /dev/cu.usbmodem... repl   # interactive
 ```
 
 Or capture a fixed window non-interactively:
@@ -158,18 +159,18 @@ Each `test/<hw>/API.md` accumulates the verified API as you probe peripherals �
 
 1. Create the folder: `creatures/<new-name>/`.
 2. Required files:
-   - `main.py` — MicroPython runtime. Easiest start: copy from a similar body (`creatures/touchy-pebble/main.py` for Xiao-class, `creatures/m5sticks3/main.py` for M5-class) and edit pin assignments, WiFi config, scope dict.
+   - `main.py` — MicroPython runtime. Easiest start: copy from a similar body (`creatures/touchy-pebble/main.py` for Xiao-class, `creatures/sticks3/main.py` for M5-class) and edit pin assignments, WiFi config, scope dict.
    - `system_prompt.md` — hardware truth Claude sees as system prompt.
    - `character.md` — one-line desire. e.g. `You like being touched.`
    - `seed_soul.md` — initial personality, written from the body's first-person view.
    - `seed_instinct.py` — initial `async def run()` coroutine. Usually a sensor-streamer with motors off.
    - `recipes.py` — start empty (`RECIPES = {}`), add as you tune.
    - `tune.py` — copy from a similar body and rename the class + `STATUS_LABEL`.
-3. `python spine.py creatures/<new-name>` will create `logs/` automatically on first run.
+3. `spine creatures/<new-name>` will create `logs/` automatically on first run.
 
 ## Shared scaffolding
 
-`harness.py` (root) provides `TuneAppBase` and `format_recipe`. Each creature's `tune.py` subclasses `TuneAppBase`, supplies a `compose()` and `on_input_submitted()`, and reuses the websocket server, heartbeat tracking, log panel, status bar, and command history for free.
+`src/instinct_and_soul/harness.py` provides `TuneAppBase` and `format_recipe`. Each creature's `tune.py` subclasses `TuneAppBase`, supplies a `compose()` and `on_input_submitted()`, and reuses the websocket server, heartbeat tracking, log panel, status bar, and command history for free.
 
 If two creatures end up sharing a body and their `recipes.py` / `tune.py` start drifting in sync, that's the signal to extract a shared module — e.g. `bodies/xiao_imu_motors/recipes_common.py` — and import from it. Do not extract preemptively.
 
@@ -178,19 +179,19 @@ If two creatures end up sharing a body and their `recipes.py` / `tune.py` start 
 After any change to the harness, recipes, or tuners:
 
 ```
-python -c "import ast; ast.parse(open('harness.py').read())"
-python -c "import ast; ast.parse(open('creatures/touchy-pebble/tune.py').read())"
-python -c "import ast; ast.parse(open('creatures/m5sticks3/tune.py').read())"
-python spine.py creatures/touchy-pebble --help
+uv run python -c "import ast; ast.parse(open('src/instinct_and_soul/harness.py').read())"
+uv run python -c "import ast; ast.parse(open('creatures/touchy-pebble/tune.py').read())"
+uv run python -c "import ast; ast.parse(open('creatures/sticks3/tune.py').read())"
+uv run spine creatures/touchy-pebble --help
 ```
 
 Recipe parity check (every recipe formats to valid Python):
 
 ```
-python -c "
+uv run python -c "
 import sys, ast
-sys.path.insert(0, 'creatures/touchy-pebble'); sys.path.insert(0, '.')
-from harness import format_recipe
+sys.path.insert(0, 'creatures/touchy-pebble')
+from instinct_and_soul.harness import format_recipe
 from recipes import RECIPES
 for name, spec in RECIPES.items():
     defaults = {n: d for (n, t, d) in spec.get('args', [])}

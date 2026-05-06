@@ -2,7 +2,7 @@
 test_imu/main.py — IMU probe for the M5Stack CORES3.
 
 Flash with:
-    make flash CREATURE=test/CORES3/test_imu PORT=/dev/tty.usbmodem...
+    flash test/CORES3/test_imu
 
 What it does:
 - Initializes M5.

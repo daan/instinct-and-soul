@@ -2,7 +2,7 @@
 tune.py — interactive motor + IMU tuner for the touchy-pebble (Xiao ESP32-C3).
 
 Run:
-    python creatures/touchy-pebble/tune.py
+    tune creatures/touchy-pebble
 
 Then flash creatures/touchy-pebble/main.py onto the Xiao and watch it connect
 on port 8765. Type a recipe name (with optional args) and the corresponding
@@ -23,19 +23,10 @@ Commands:
   imulog             — live stream accel variance (motors off)
 """
 
-import os
-import sys
-
-# Allow `import harness` and `import recipes` regardless of cwd
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
-sys.path.insert(0, HERE)
-sys.path.insert(0, ROOT)
-
 from textual.app import ComposeResult
 from textual.widgets import Input, RichLog, Static
 
-from harness import TuneAppBase, format_recipe
+from instinct_and_soul.harness import TuneAppBase, format_recipe
 from recipes import RECIPES, INSTINCT_IDLE
 
 

@@ -2,7 +2,7 @@
 tune.py — interactive tuner for the CORES3 creature.
 
 Run:
-    python creatures/cores3/tune.py
+    tune creatures/cores3
 
 Then flash creatures/cores3/main.py onto the CORES3 (set STA_SSID/PASS first)
 and watch it connect on port 8765. Type a recipe name (with optional args)
@@ -23,18 +23,10 @@ Commands:
   shake [vol]           — motion-driven tone demo (default vol 32)
 """
 
-import os
-import sys
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
-sys.path.insert(0, HERE)
-sys.path.insert(0, ROOT)
-
 from textual.app import ComposeResult
 from textual.widgets import Input, RichLog, Static
 
-from harness import TuneAppBase, format_recipe
+from instinct_and_soul.harness import TuneAppBase, format_recipe
 from recipes import RECIPES, INSTINCT_IDLE
 
 

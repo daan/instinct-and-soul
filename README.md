@@ -17,12 +17,12 @@ Start with the [installation guide](INSTALL.md) for detailed instructions.
 Each runnable thing is a **creature**: a folder under `creatures/` that bundles a body (MicroPython runtime + hardware description) with a character (desire + initial personality + initial instinct code). Two creatures are included:
 
 - `creatures/touchy-pebble/` — Xiao ESP32-C3 + IMU + two vibration motors, "you like being touched"
-- `creatures/m5sticks3/` — M5StickS3 with vibration hat, screen, and speaker, "you like being touched"
+- `creatures/sticks3/` — M5StickS3 with vibration hat, screen, and speaker, "you like being touched"
 
 To run one, point the spine at it:
 
 ```
-python spine.py creatures/touchy-pebble
+spine creatures/touchy-pebble
 ```
 
 To make a new variant — same body, different goal — copy the folder and edit `character.md` and `seed_soul.md`.

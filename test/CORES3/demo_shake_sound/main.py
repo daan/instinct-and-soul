@@ -8,7 +8,7 @@ Combines what test_imu and test_speaker established into one experience:
   - Volume 32/255, a quarter of the test_speaker probe.
 
 Flash with:
-    make flash CREATURE=test/CORES3/demo_shake_sound PORT=/dev/tty.usbmodem...
+    flash test/CORES3/demo_shake_sound
 """
 
 import M5

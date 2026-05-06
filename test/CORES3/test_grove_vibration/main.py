@@ -14,7 +14,7 @@ This sketch defaults to GPIO2. If you hear no buzz, flip MOTOR_PIN below to 1
 and re-flash.
 
 Flash with:
-    make flash CREATURE=test/CORES3/test_grove_vibration PORT=/dev/tty.usbmodem...
+    flash test/CORES3/test_grove_vibration
 
 What it does:
 - Sweeps PWM duty 0 -> 1023 in steps of 25, holding each step ~150 ms.

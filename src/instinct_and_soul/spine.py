@@ -12,8 +12,8 @@ A creature is a folder under creatures/ containing:
   logs/              — per-session subfolders written by the spine
 
 Usage:
-  python spine.py creatures/touchy-pebble            # fresh session
-  python spine.py creatures/touchy-pebble --resume   # continue last session
+  spine creatures/touchy-pebble            # fresh session
+  spine creatures/touchy-pebble --resume   # continue last session
 
 Requires: pip install websockets textual anthropic
 """
@@ -402,7 +402,7 @@ class SpineApp(App):
                 self._ws_server.close()
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description="Embodied-prompting spine")
     parser.add_argument("creature_path",
                         help="Path to the creature directory (e.g. creatures/touchy-pebble)")
@@ -410,4 +410,10 @@ if __name__ == "__main__":
                         help="Resume from the last session's final soul/instinct")
     args = parser.parse_args()
     creature = Creature(args.creature_path)
-    SpineApp(creature=creature, resume=args.resume).run()
+    # mouse=False disables Textual's mouse capture so the terminal can
+    # handle drag-selection — lets you copy text out of the log panel.
+    SpineApp(creature=creature, resume=args.resume).run(mouse=False)
+
+
+if __name__ == "__main__":
+    main()

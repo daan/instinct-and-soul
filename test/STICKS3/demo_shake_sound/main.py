@@ -10,7 +10,7 @@ Map: deviation from rest (gravity) → tone frequency. More shake = higher pitch
 Below threshold = silent.
 
 Flash with:
-    make flash CREATURE=test/STICKS3/demo_shake_sound PORT=/dev/tty.usbmodem...
+    flash test/STICKS3/demo_shake_sound
 """
 
 import M5

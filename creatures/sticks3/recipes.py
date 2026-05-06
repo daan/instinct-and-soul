@@ -1,5 +1,5 @@
 """
-recipes.py — instinct templates for the m5sticks3 tuner.
+recipes.py — instinct templates for the sticks3 tuner.
 
 This body has no vibration motor — only sound (speaker) and IMU. Recipes
 are limited to those two surfaces.

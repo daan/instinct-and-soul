@@ -121,7 +121,7 @@ for freq in range(200, 2100, 100):
 M5.Speaker.stop()
 ```
 
-Gotcha: this is a different idiom from the m5sticks3, where `Speaker.tone()` had to be called repeatedly in a tight inner loop (~50 ms cadence) for any sound to come out. On CORES3, a single `tone()` call plays for the full requested duration on its own. Don't carry the m5sticks3 pattern over.
+Gotcha: this is a different idiom from the sticks3, where `Speaker.tone()` had to be called repeatedly in a tight inner loop (~50 ms cadence) for any sound to come out. On CORES3, a single `tone()` call plays for the full requested duration on its own. Don't carry the sticks3 pattern over.
 
 ## Grove ports
 

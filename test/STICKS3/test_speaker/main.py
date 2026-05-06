@@ -2,7 +2,7 @@
 test_speaker/main.py — speaker probe for the M5StickS3.
 
 Flash with:
-    make flash CREATURE=test/STICKS3/test_speaker PORT=/dev/tty.usbmodem...
+    flash test/STICKS3/test_speaker
 
 Confirms the StickS3 speaker gotcha: a single Speaker.tone() call does not
 sustain — tones must be driven in a tight loop with M5.update() ticking the
