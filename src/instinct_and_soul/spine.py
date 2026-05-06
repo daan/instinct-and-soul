@@ -158,6 +158,13 @@ class SpineApp(App):
         background: $surface;
         padding: 0 1;
     }
+    #intent {
+        height: auto;
+        max-height: 5;
+        background: $surface;
+        padding: 0 1;
+        border-bottom: solid $primary;
+    }
     #log {
         height: 1fr;
         border: solid $primary;
@@ -209,6 +216,7 @@ class SpineApp(App):
 
     def compose(self) -> ComposeResult:
         yield Static("● disconnected", id="status")
+        yield Static("[dim](no intent yet)[/]", id="intent")
         yield RichLog(id="log", highlight=True, markup=True)
 
     def on_mount(self) -> None:
@@ -335,6 +343,12 @@ class SpineApp(App):
                 return
 
             self.log_msg("intent: {}".format(intent), style="bold magenta")
+            try:
+                ts = time.strftime("%H:%M:%S")
+                self.query_one("#intent", Static).update(
+                    "[bold magenta]intent[/] [dim]{}[/]\n{}".format(ts, intent))
+            except Exception:
+                pass
 
             # build reflection record
             seq = self.store.next_seq()
