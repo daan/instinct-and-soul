@@ -38,9 +38,13 @@ mpremote connect /dev/cu.usbmodem1101 ls               # list files on board
 
 For other hardware lock-ups: hold the power button for ~6 seconds, short-press to power back on, then `mpremote connect /dev/<port> ls` immediately while the device is in its idle window.
 
+###  M5 STICKS3 IMU stuck reading all zeros
+
+If reflections show `accel x=0.0000 y=0.0000 z=0.0000` consistently, the IMU enumerated but its data path didn't come up. `M5.update()` ticks won't recover it; only a hard reset works (`mpremote ... reset`, or power-cycle). Full diagnostic + cause in `test/STICKS3/API.md` under the IMU section.
+
 ## Workflow B: Interactive tuner
 
-When to use:
+The tuner is like spine without LLM, it uploads python code "recipe" that is exectuted on the board. This is usefull for interactive tuning sensors and actuators:
 - Calibrating motor duty / IMU thresholds for a new body.
 - Exploring instinct snippets without burning Claude API calls.
 - Validating that a body responds correctly to a known input.
@@ -80,12 +84,12 @@ Recipes live in `creatures/<name>/recipes.py` as a dict of `{name: {"args": [...
 
 ## Workflow C: Hardware probes (`test/<hw>/`)
 
-When to use:
+Test is uploading firmwares with the sole purpose to debug sensors and actuators:
 - Bringing up a new hardware platform before there's a creature for it.
 - Discovering an unfamiliar M5/MicroPython API (what methods exist, what units they return, what gotchas hide where).
 - Writing a focused single-purpose sketch you want to flash and forget.
 
-Layout — each probe is a self-contained folder with a single `main.py`:
+Each test is a self-contained folder with a single `main.py`:
 
 ```
 test/
@@ -171,8 +175,6 @@ Each `test/<hw>/API.md` accumulates the verified API as you probe peripherals �
 ## Shared scaffolding
 
 `src/instinct_and_soul/harness.py` provides `TuneAppBase` and `format_recipe`. Each creature's `tune.py` subclasses `TuneAppBase`, supplies a `compose()` and `on_input_submitted()`, and reuses the websocket server, heartbeat tracking, log panel, status bar, and command history for free.
-
-If two creatures end up sharing a body and their `recipes.py` / `tune.py` start drifting in sync, that's the signal to extract a shared module — e.g. `bodies/xiao_imu_motors/recipes_common.py` — and import from it. Do not extract preemptively.
 
 ## Smoke tests
 

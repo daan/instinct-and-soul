@@ -33,6 +33,36 @@ from textual.widgets import RichLog, Static
 PORT = 8765
 HEARTBEAT_TIMEOUT = 12
 
+# USD per 1M tokens — (input, output). Cache reads price at ~0.1× input;
+# cache writes at ~1.25× input. Update if Anthropic changes pricing.
+MODEL_PRICES = {
+    "claude-sonnet-4-6":         (3.00, 15.00),
+    "claude-opus-4-7":           (15.00, 75.00),
+    "claude-haiku-4-5-20251001": (0.80,  4.00),
+}
+
+
+def fmt_tokens(n):
+    """Format token count as '4.5K' or '127'."""
+    if n >= 1000:
+        return "{:.1f}K".format(n / 1000)
+    return str(n)
+
+
+def compute_cost(model, usage):
+    """Return USD cost given model id and a usage dict, or None if model unknown."""
+    if model not in MODEL_PRICES:
+        return None
+    in_price, out_price = MODEL_PRICES[model]
+    fresh_in    = usage.get("input_tokens", 0) or 0
+    cache_read  = usage.get("cache_read_input_tokens", 0) or 0
+    cache_write = usage.get("cache_creation_input_tokens", 0) or 0
+    out_tokens  = usage.get("output_tokens", 0) or 0
+    return (fresh_in * in_price
+            + cache_read * in_price * 0.1
+            + cache_write * in_price * 1.25
+            + out_tokens * out_price) / 1_000_000
+
 # ── Creature loading ───────────────────────────────────────────────────────
 
 class Creature:
@@ -111,13 +141,14 @@ class VersionStore:
         for subdir in ("instinct", "experience", "reflections", "crashes"):
             os.makedirs(os.path.join(self.base, subdir), exist_ok=True)
 
-    def save_session_config(self, system_prompt, character, resumed_from=None):
+    def save_session_config(self, system_prompt, character, model=None, resumed_from=None):
         path = os.path.join(self.base, "session.json")
         with open(path, "w") as f:
             json.dump({
                 "session_id": self.session_id,
                 "ts": int(time.time()),
                 "resumed_from": resumed_from,
+                "model": model,
                 "system_prompt": system_prompt,
                 "character": character,
             }, f, indent=2)
@@ -157,6 +188,12 @@ class VersionStore:
             json.dump(data, f, indent=2)
         return path
 
+    def save_usage(self, totals):
+        path = os.path.join(self.base, "usage.json")
+        with open(path, "w") as f:
+            json.dump(totals, f, indent=2)
+        return path
+
     def save_crash(self, seq, error):
         path = os.path.join(self.base, "crashes", "{:03d}_{}.txt".format(seq, int(time.time())))
         with open(path, "w") as f:
@@ -189,17 +226,19 @@ class SpineApp(App):
 
     BINDINGS = [("ctrl+c", "quit", "Quit"), ("escape", "quit", "Quit"), ("ctrl+q", "quit", "Quit")]
 
-    def __init__(self, creature, resume=False):
+    def __init__(self, creature, resume=False, model="claude-sonnet-4-6"):
         super().__init__()
         self.creature = creature
+        self.model = model
         self.board_ws = None
         self.last_heartbeat = 0.0
         self._ws_server = None
 
         self.client = anthropic.AsyncAnthropic()
-        self.store = VersionStore(creature.logs_dir)
 
-        # experience state — resume or seed
+        # Resume state must be loaded BEFORE VersionStore creates the new
+        # session dir, otherwise find_last_session() picks up the just-created
+        # (empty) directory as "most recent" and the resume silently no-ops.
         self.current_experience = creature.seed_experience
         self.current_instinct = creature.seed_instinct
         self.resumed_from = None
@@ -214,15 +253,28 @@ class SpineApp(App):
                     self.current_instinct = instinct
                 self.resumed_from = os.path.basename(last)
 
+        self.store = VersionStore(creature.logs_dir)
+
         self.instinct_version = 0
         self.experience_version = 0
         self.messages_since_last = []
         self.last_crashed = False
         self.last_crash_msg = ""
         self.reflecting = False
+        self.session_usage = {
+            "model": model,
+            "started_at": int(time.time()),
+            "updated_at": int(time.time()),
+            "reflections": 0,
+            "input_tokens_total": 0,
+            "cache_read_input_tokens_total": 0,
+            "cache_creation_input_tokens_total": 0,
+            "output_tokens_total": 0,
+            "cost_total": 0.0,
+        }
 
         # save session config and initial state
-        self.store.save_session_config(creature.system_prompt, creature.character, self.resumed_from)
+        self.store.save_session_config(creature.system_prompt, creature.character, self.model, self.resumed_from)
         self.store.save_seeds(creature)
         seq = self.store.next_seq()
         self.instinct_version = seq
@@ -241,9 +293,32 @@ class SpineApp(App):
         self.set_interval(1, self.update_status)
         self.log_msg("creature: {}".format(self.creature.name), style="bold")
         self.log_msg("session: {}".format(self.store.session_id), style="bold")
+        self.log_msg("model: {}".format(self.model), style="bold")
         if self.resumed_from:
             self.log_msg("resumed from: {}".format(self.resumed_from), style="cyan")
         self.log_msg("spine: listening on port {}".format(PORT))
+
+    async def call_llm(self, system_prompt, user_message):
+        """Provider-agnostic wrapper. Returns {"text": str, "usage": {...}}."""
+        response = await self.client.messages.create(
+            model=self.model,
+            max_tokens=4096,
+            system=[{
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{"role": "user", "content": user_message}],
+        )
+        return {
+            "text": response.content[0].text,
+            "usage": {
+                "input_tokens": response.usage.input_tokens,
+                "cache_read_input_tokens": getattr(response.usage, "cache_read_input_tokens", 0) or 0,
+                "cache_creation_input_tokens": getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
+                "output_tokens": response.usage.output_tokens,
+            },
+        }
 
     def log_msg(self, msg, style=""):
         ts = time.strftime("%H:%M:%S")
@@ -261,7 +336,17 @@ class SpineApp(App):
             status = self.query_one("#status", Static)
         except Exception:
             return
-        prefix = "{} · session: {}".format(self.creature.name, self.store.session_id)
+        resume_info = " [cyan]← {}[/cyan]".format(self.resumed_from) if self.resumed_from else ""
+        usage_info = ""
+        if self.session_usage["reflections"] > 0:
+            in_total = (self.session_usage["input_tokens_total"]
+                        + self.session_usage["cache_read_input_tokens_total"]
+                        + self.session_usage["cache_creation_input_tokens_total"])
+            out_total = self.session_usage["output_tokens_total"]
+            cost = self.session_usage["cost_total"]
+            usage_info = "  · {} in / {} out · ${:.2f}".format(
+                fmt_tokens(in_total), fmt_tokens(out_total), cost)
+        prefix = "{}{}{}".format(self.creature.name, resume_info, usage_info)
         if self.board_ws is not None and (time.time() - self.last_heartbeat) < HEARTBEAT_TIMEOUT:
             extra = "  [dim]reflecting...[/dim]" if self.reflecting else ""
             status.update("[bold green]● connected[/]  {}{}".format(prefix, extra))
@@ -341,14 +426,32 @@ class SpineApp(App):
         self.log_msg("reflecting ({} messages)...".format(len(messages)), style="dim")
 
         try:
-            response = await self.client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=4096,
-                system=self.creature.system_prompt,
-                messages=[{"role": "user", "content": reflection_prompt}],
-            )
+            result = await self.call_llm(self.creature.system_prompt, reflection_prompt)
+            reply = result["text"]
+            usage = result["usage"]
 
-            reply = response.content[0].text
+            # update running session totals + write usage.json
+            self.session_usage["reflections"] += 1
+            self.session_usage["input_tokens_total"] += usage["input_tokens"]
+            self.session_usage["cache_read_input_tokens_total"] += usage["cache_read_input_tokens"]
+            self.session_usage["cache_creation_input_tokens_total"] += usage["cache_creation_input_tokens"]
+            self.session_usage["output_tokens_total"] += usage["output_tokens"]
+            cost_inc = compute_cost(self.model, usage)
+            if cost_inc is not None:
+                self.session_usage["cost_total"] += cost_inc
+            self.session_usage["updated_at"] = int(time.time())
+            self.store.save_usage(self.session_usage)
+
+            # log per-reflection summary
+            input_total = (usage["input_tokens"] + usage["cache_read_input_tokens"]
+                           + usage["cache_creation_input_tokens"])
+            cache_str = ""
+            if usage["cache_read_input_tokens"] > 0:
+                cache_str = " ({} cached)".format(fmt_tokens(usage["cache_read_input_tokens"]))
+            cost_str = " · ${:.4f}".format(cost_inc) if cost_inc is not None else ""
+            self.log_msg("reflected: {} in{} / {} out{}".format(
+                fmt_tokens(input_total), cache_str,
+                fmt_tokens(usage["output_tokens"]), cost_str), style="dim")
 
             intent = extract_xml_tag(reply, "intent")
             new_experience = extract_xml_tag(reply, "experience")
@@ -378,6 +481,7 @@ class SpineApp(App):
                 "intent": intent,
                 "instinct_changed": new_instinct is not None,
                 "experience_changed": new_experience is not None,
+                "usage": usage,
                 "prompt": reflection_prompt,
                 "response": reply,
             }
@@ -439,11 +543,14 @@ def main():
                         help="Path to the creature directory (e.g. creatures/touchy-pebble)")
     parser.add_argument("--resume", action="store_true",
                         help="Resume from the last session's final experience/instinct")
+    parser.add_argument("--model", default="claude-sonnet-4-6",
+                        help="Claude model id (e.g. claude-sonnet-4-6, claude-opus-4-7, "
+                             "claude-haiku-4-5-20251001). Recorded in session.json.")
     args = parser.parse_args()
     creature = Creature(args.creature_path)
     # mouse=False disables Textual's mouse capture so the terminal can
     # handle drag-selection — lets you copy text out of the log panel.
-    SpineApp(creature=creature, resume=args.resume).run(mouse=False)
+    SpineApp(creature=creature, resume=args.resume, model=args.model).run(mouse=False)
 
 
 if __name__ == "__main__":

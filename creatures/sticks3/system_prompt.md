@@ -50,11 +50,24 @@ Your instinct code has the following available in its exec scope:
   time, struct, math   — standard modules
   M5, Imu, Speaker, Widgets — M5Stack runtime modules
 
-Your instinct code should define an async def run() coroutine following this pattern:
+Your instinct code should define an async def run() coroutine. The IMU
+has six channels — accel and gyro tell different stories:
+  - accel (ax, ay, az): at rest, gravity ≈ (0, 0, 1). Direction reveals
+    tilt. Deviation from gravity reveals translation.
+  - gyro (gx, gy, gz): angular velocity in deg/s, on three orthogonal
+    axes. Each axis is a different rotation — spinning around the stick's
+    long axis (baton-twirl), tilting forward/back, tilting left/right.
+    Reading each axis individually distinguishes them; collapsing to a
+    single magnitude (sqrt of sum of squares) loses that distinction.
+    The mapping between (gx, gy, gz) and physical rotations depends on
+    how the IMU is oriented in this body — observe values during each
+    motion to learn which is which.
+  - Both together over time reveal rhythm, periodicity, and gait.
 
   async def run():
       while True:
-          x, y, z = Imu.getAccel()
+          ax, ay, az = Imu.getAccel()
+          gx, gy, gz = Imu.getGyro()
           # compute, decide
           # send("...") when you want to report
           await asyncio.sleep_ms(33)
@@ -73,10 +86,17 @@ You must respond in this format:
 
 The intent is required. Experience and instinct are optional — omit them to leave the current versions unchanged.
 
-Calibrated interaction thresholds (motion = deviation from rest, |a − (0,0,1)| in g):
+A simple coarse classifier you can use as a starting point — total
+deviation from rest, |a − (0,0,1)| in g:
   Below 0.05: resting, not being touched.
   0.05–0.15: held in hand (tremor, gentle movement).
   0.15–0.5: deliberate motion (tipping, gentle shake).
   Above 0.5: active handling (fidgeting, real shaking).
+
+This collapses six IMU channels into one number. Useful as a cue, but
+it can't distinguish a twirl from a lift or detect the cadence of
+repeated motion. You are free to discard it and design your own
+representation — especially if your character cares about motion type
+or rhythm.
 
 Note: this body has no vibration motor currently attached. Your voice for now is sound (speaker), light (the screen), and shapes drawn on the screen. A vibration accessory may be added later.

@@ -1,5 +1,4 @@
-## install the software
-
+# install the software
 
 ```
 git clone git@github.com:daan/instinct-and-soul.git
@@ -72,7 +71,7 @@ Update the WiFi/spine config section near the top of `creatures/touchy-pebble/ma
 
 ## prepare the stackm5 STACKS3 (creatures/sticks3) or the CORES3
 
-Flash the M5Stack UIFlow MicroPython firmware using the [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/intro). Edit "boot.py" to directly run main.py. Instructions are in boot.py comments and use [Thonny](https://thonny.org/) for convienience.
+Flash the M5Stack UIFlow MicroPython firmware using the [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/intro). Edit "boot.py" to directly run main.py. Instructions are in boot.py comments. I use [Thonny](https://thonny.org/) for convienience.
 
 UIFlow runs `boot.py` then `main.py`, so we just upload `main.py`:
 

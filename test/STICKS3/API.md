@@ -39,6 +39,29 @@ Chip: **BMI270** (`getType() == 6 == M5.Imu.IMU_TYPE.BMI270`). 6-axis (accel + g
 
 Differs from CORES3: same chip, same API, but on the StickS3 there's no companion magnetometer chip (the CORES3 has one). Treat the StickS3 IMU as 6-axis only.
 
+### Gotcha — IMU stuck reading all zeros
+
+**Symptom**: `getAccel()` and `getGyro()` both return `(0.0, 0.0, 0.0)` even though `isEnabled()` returns `True` and `getType()` returns `6` (BMI270). At rest you should see `accel ≈ (0, 0, 1)` (or whichever axis gravity is along, depending on orientation). All-zeros means the chip enumerated but its data path never came up.
+
+**Cause**: `M5.begin()` doesn't always cleanly initialize the IMU when the firmware is in a warm/dirty state — for example, after rapid hot-swaps of instinct code, or after a prior process that left the I2C bus in an odd state. `M5.update()` ticks (even hundreds of them) do **not** recover it.
+
+**Fix**: hard reset the board.
+
+```bash
+mpremote connect /dev/cu.usbmodem... reset
+# then re-probe
+mpremote connect /dev/cu.usbmodem... exec "
+import M5; M5.begin()
+import time; time.sleep_ms(200)
+print('accel:', M5.Imu.getAccel())   # expect non-zero with gravity along one axis
+print('gyro:',  M5.Imu.getGyro())    # expect tiny values < 1 deg/s at rest
+"
+```
+
+The user-facing equivalent is to hold the power button ~6 seconds for a full power-off, then short-press to power back on.
+
+If the IMU still reads zeros after a hard reset, that's a real fault — at that point reach for direct I2C probing (BMI270 `WHO_AM_I = 0x00`, expected `0x24`).
+
 ## Display (LCD)
 
 Resolution: **135 × 240** portrait. Module: `M5.Display`.
