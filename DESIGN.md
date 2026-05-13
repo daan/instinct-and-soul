@@ -190,6 +190,21 @@ The creature's `main.py` chooses when (or whether) to snapshot `Mem` to the spin
 The cadence and trigger are a creator's choice in `main.py`, not the soul's. `memory-example/main.py` runs a 10 s periodic task that skips emission when the snapshot is identical to the last one — quiet logs when `Mem` is idle, one snapshot per real change otherwise.
 
 
+## Explicit Feedback
+
+Most of the time the soul reacts only to what its instinct chose to surface — a fully implicit loop where the operator (designer, researcher) is just an observer. To inject something explicit into that loop, the spine offers an `Input` widget docked at the bottom of the TUI.
+
+When the operator submits text, the spine:
+
+- tags it as `OPERATOR: <text>` and appends to `messages_since_last`, so the soul sees it in the next reflection alongside whatever the instinct emitted
+- writes the raw submission to `logs/<sid>/operator.log` (one line per submission: `{ts}\t{text}`) *before* the reflection runs, so the operator's history survives reflection failures and is greppable in one place
+- **forces** a reflection — the cycle runs immediately, even if the instinct has sent nothing recently
+
+The soul still mediates. The operator forces the *cycle*, not the *resulting code*. The soul decides whether to rewrite instinct.py or experience.md in response. If the operator never types anything, the operator console is invisible to the system; instinct and soul see no `OPERATOR:` traffic and the loop runs purely implicitly.
+
+What an `OPERATOR:` message *means* semantically (e.g. `OPERATOR: molt` interpreted as "make room for new growth without starting over") is not defined by the spine. It is a per-creature convention authored in that creature's `system_prompt.md`. The spine only knows how to relay the message; the soul decides how to respond.
+
+
 ## Communication Protocol
 
 All communication between instinct and spine uses a single WebSocket connection.
