@@ -338,9 +338,10 @@ class SpineApp(App):
             system=[{
                 "type": "text",
                 "text": system_prompt,
-                "cache_control": {"type": "ephemeral"},
+                "cache_control": {"type": "ephemeral", "ttl": "1h"},
             }],
             messages=[{"role": "user", "content": user_message}],
+            extra_headers={"anthropic-beta": "extended-cache-ttl-2025-04-11"},
         )
         return {
             "text": response.content[0].text,
