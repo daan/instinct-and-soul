@@ -128,21 +128,84 @@ Each reflection JSON contains:
 This log is self-contained: given the initial seed files and this sequence of reflections, the full history can be replayed.
 
 
+## Persistent Memory
+
+Local variables inside the soul's `run()` coroutine are wiped every time the instinct is rewritten — hot-swap cancels the current task and re-`exec`s new code. To carry state across reflections without paying for it in the (token-priced) `experience.md` channel, a creature's `main.py` can expose a `Mem` primitive: bounded named-slot ring buffers that live at module scope and survive instinct hot-swap.
+
+`Mem` is private to the device. The soul programs the instinct to read and write it, but the spine does **not** include `Mem` state in the reflection prompt. The soul sees memory only through whatever its own instinct chose to `send()`. `experience.md` remains the soul's deliberate cross-reflection memory; `Mem` is the instinct's working memory on the device.
+
+### API
+
+```python
+Mem.push(slot, value, maxlen=None)  # append; ring-buffer drops oldest when full
+Mem.recent(slot, n=None)            # last n entries (or all if n is None)
+Mem.latest(slot)                    # most recent entry only (or None)
+Mem.slots()                         # list of slot names in use
+Mem.clear(slot=None)                # clear one slot, or all
+Mem.snapshot()                      # dict of all slots, for serialization
+```
+
+Bounds: up to 8 distinct slots; default 300 entries per slot, hard ceiling 1000. Values must be JSON-serializable (numbers, strings, lists, dicts of those).
+
+### Dict-like usage
+
+Push once, read back with `latest()`. A slot used this way behaves like a single value remembered by name.
+
+```python
+async def run():
+    Mem.push("user_name", "Lee")
+    Mem.push("baseline_hr", 72)
+
+    while True:
+        name = Mem.latest("user_name")        # "Lee"
+        baseline = Mem.latest("baseline_hr")  # 72
+        # use them ...
+        await asyncio.sleep_ms(33)
+```
+
+### Time-series usage
+
+Push every tick, read a window back with `recent(n)`. The slot is a sliding window of recent samples.
+
+```python
+async def run():
+    while True:
+        ax, ay, az = Imu.getAccel()
+        motion = (ax * ax + ay * ay + az * az) ** 0.5
+        Mem.push("motion", motion, maxlen=300)  # ~10s at 30 Hz
+
+        window = Mem.recent("motion", 30)       # last 30 samples
+        if len(window) == 30:
+            mean = sum(window) / 30
+            var = sum((v - mean) ** 2 for v in window) / 30
+            send("motion var={:.4f}".format(var))
+
+        await asyncio.sleep_ms(33)
+```
+
+### Logging
+
+The creature's `main.py` chooses when (or whether) to snapshot `Mem` to the spine. The convention is to call `send("MEM:" + json.dumps(Mem.snapshot()))` from a background task in `main.py`. The spine routes any `MEM:` message to `logs/<sid>/memory/{seq:03d}_{ts}.json` — same timestamped naming as `instinct/`, `experience/`, `reflections/`, and `crashes/` — and does not include it in the reflection prompt.
+
+The cadence and trigger are a creator's choice in `main.py`, not the soul's. `memory-example/main.py` runs a 10 s periodic task that skips emission when the snapshot is identical to the last one — quiet logs when `Mem` is idle, one snapshot per real change otherwise.
+
+
 ## Communication Protocol
 
 All communication between instinct and spine uses a single WebSocket connection.
 
 ### Instinct → Spine
 
-Plain strings. Three types:
+Plain strings. Four types:
 
 | Source | Content | Purpose |
 |--------|---------|---------|
 | `heartbeat()` | `HEARTBEAT` | Liveness signal, every 3 seconds |
 | instinct.py | `CRASH:` + error | Sent from the except block after a crash |
+| `main.py` | `MEM:` + JSON | Snapshot of persistent memory (see Persistent Memory) |
 | `send(msg)` | anything else | Message to the soul |
 
-The spine distinguishes these by prefix. Everything that is not `HEARTBEAT` or `CRASH:` is a soul-bound message.
+The spine distinguishes these by prefix. `MEM:` is routed to per-session memory logs and not surfaced to the soul. Everything that is not `HEARTBEAT`, `CRASH:`, or `MEM:` is a soul-bound message.
 
 ### Spine → Instinct
 
