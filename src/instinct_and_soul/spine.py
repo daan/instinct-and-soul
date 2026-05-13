@@ -138,7 +138,7 @@ class VersionStore:
         self.base = os.path.join(logs_dir, session_id)
         self.session_id = session_id
         self.seq = 0
-        for subdir in ("instinct", "experience", "reflections", "crashes"):
+        for subdir in ("instinct", "experience", "reflections", "crashes", "memory"):
             os.makedirs(os.path.join(self.base, subdir), exist_ok=True)
 
     def save_session_config(self, system_prompt, character, model=None, resumed_from=None):
@@ -198,6 +198,12 @@ class VersionStore:
         path = os.path.join(self.base, "crashes", "{:03d}_{}.txt".format(seq, int(time.time())))
         with open(path, "w") as f:
             f.write(error)
+        return path
+
+    def save_memory(self, seq, payload):
+        path = os.path.join(self.base, "memory", "{:03d}_{}.json".format(seq, int(time.time())))
+        with open(path, "w") as f:
+            f.write(payload)
         return path
 
 
@@ -375,6 +381,8 @@ class SpineApp(App):
                     self.store.save_crash(self.store.next_seq(), msg)
                     if not self.reflecting:
                         self.run_worker(self.reflect(), exclusive=False)
+                elif msg.startswith("MEM:"):
+                    self.store.save_memory(self.store.next_seq(), msg[4:])
                 else:
                     self.log_msg(msg)
                     self.messages_since_last.append({
