@@ -15,6 +15,9 @@ Runtime provides to instinct code:
   M5, Imu, Speaker, Widgets, Als, Mem
 
 Mem is a bounded named-slot memory that survives instinct hot-swap.
+A background task on this device periodically snapshots Mem and emits
+"MEM:<json>" to the spine, skipping emission when the snapshot is
+unchanged since the last one.
 """
 
 import M5
@@ -49,6 +52,7 @@ import ubinascii
 import uos
 import struct
 import math
+import json
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
@@ -69,6 +73,7 @@ SPINE_HOST_AP = "192.168.4.2"     # laptop's manual IP on the cores3 AP
 SPINE_HOST_STA = "10.0.0.2"       # laptop's static IP on Lee (assign manually on the ethernet dongle)
 SPINE_PORT = 8765
 HEARTBEAT_INTERVAL = 5  # seconds
+MEM_SNAPSHOT_INTERVAL = 10  # seconds
 
 # ── Display helper ─────────────────────────────────────────────────────────
 
@@ -351,6 +356,22 @@ async def heartbeat():
                 pass
 
 
+async def mem_snapshot_loop():
+    last = None
+    while True:
+        await asyncio.sleep(MEM_SNAPSHOT_INTERVAL)
+        try:
+            if not ws or not Mem._slots:
+                continue
+            payload = json.dumps(Mem.snapshot())
+            if payload == last:
+                continue
+            ws.send("MEM:" + payload)
+            last = payload
+        except Exception as e:
+            print("mem snapshot: error:", e)
+
+
 async def ws_listener():
     global ws
     print("ws: connecting to {}:{}".format(SPINE_HOST, SPINE_PORT))
@@ -371,6 +392,7 @@ async def ws_listener():
 async def main():
     await swap_instinct(DEFAULT_INSTINCT)
     asyncio.create_task(heartbeat())
+    asyncio.create_task(mem_snapshot_loop())
     while True:
         try:
             await ws_listener()
