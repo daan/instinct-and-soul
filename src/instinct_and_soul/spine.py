@@ -28,7 +28,7 @@ import time
 import websockets
 import anthropic
 from textual.app import App, ComposeResult
-from textual.widgets import RichLog, Static
+from textual.widgets import Input, RichLog, Static
 
 PORT = 8765
 HEARTBEAT_TIMEOUT = 12
@@ -206,6 +206,12 @@ class VersionStore:
             f.write(payload)
         return path
 
+    def save_operator_command(self, text):
+        path = os.path.join(self.base, "operator.log")
+        with open(path, "a") as f:
+            f.write("{}\t{}\n".format(int(time.time()), text))
+        return path
+
 
 # ── App ────────────────────────────────────────────────────────────────────
 
@@ -227,6 +233,10 @@ class SpineApp(App):
     #log {
         height: 1fr;
         border: solid $primary;
+    }
+    #operator-input {
+        dock: bottom;
+        height: 3;
     }
     """
 
@@ -293,6 +303,22 @@ class SpineApp(App):
         yield Static("● disconnected", id="status")
         yield Static("[dim](no intent yet)[/]", id="intent")
         yield RichLog(id="log", highlight=True, markup=True)
+        yield Input(placeholder="operator: type a message and press enter", id="operator-input")
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        text = event.value.strip()
+        if not text:
+            return
+        event.input.value = ""
+        tagged = "OPERATOR: " + text
+        self.store.save_operator_command(text)
+        self.log_msg(tagged, style="bold cyan")
+        self.messages_since_last.append({
+            "ts": int(time.time()),
+            "content": tagged,
+        })
+        if not self.reflecting:
+            self.run_worker(self.reflect(), exclusive=False)
 
     def on_mount(self) -> None:
         self.run_worker(self.ws_server(), exclusive=False)
