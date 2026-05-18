@@ -3,28 +3,36 @@ flash.py — copy a creature's main.py onto a USB-attached MicroPython board.
 
 Usage:
     flash creatures/cores3
-    flash creatures/cores3 --port /dev/cu.usbmodem3101
+    flash creatures/cores3 --port /dev/ttyACM0
 
-Without --port, looks for a single /dev/cu.usbmodem* device and uses it.
+Without --port, looks for a single USB serial device and uses it.
 Errors clearly when zero or multiple ports are found.
 """
 
 import argparse
-import glob
 import os
 import subprocess
 import sys
 
+from serial_device import usb_devices
+
+
+def _describe(d):
+    return f"{d.device}  {d.manufacturer or '?'}  {d.product or '?'}"
+
 
 def detect_port():
-    candidates = sorted(glob.glob("/dev/cu.usbmodem*"))
-    if not candidates:
-        raise SystemExit("flash: no /dev/cu.usbmodem* device found — pass --port explicitly")
-    if len(candidates) > 1:
-        raise SystemExit(
-            "flash: multiple boards detected ({}) — pass --port to choose".format(
-                ", ".join(candidates)))
-    return candidates[0]
+    devices = usb_devices()
+    if not devices:
+        raise SystemExit("flash: no USB serial device found — pass --port explicitly")
+    if len(devices) > 1:
+        lines = ["flash: multiple USB serial devices detected — pass --port to choose:"]
+        for d in devices:
+            lines.append(f"  {_describe(d)}")
+        raise SystemExit("\n".join(lines))
+    d = devices[0]
+    print(f"flash: found USB device: {_describe(d)}")
+    return d.device
 
 
 def main():
