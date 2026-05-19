@@ -49,23 +49,25 @@ import struct
 import math
 
 # ── Config ──────────────────────────────────────────────────────────────────
+# Prefer wifi.py if flashed alongside main.py; otherwise use defaults below.
+# SPINE_HOST_* is the laptop's IP (manual on AP, static on STA).
 
-MODE = "sta"  # "ap" or "sta"
+try:
+    import wifi as _w
+    MODE = _w.MODE
+    AP_SSID, AP_PASS, AP_CHANNEL = _w.AP_SSID, _w.AP_PASS, _w.AP_CHANNEL
+    STA_SSID, STA_PASS = _w.STA_SSID, _w.STA_PASS
+    SPINE_HOST_AP, SPINE_HOST_STA = _w.SPINE_HOST_AP, _w.SPINE_HOST_STA
+    SPINE_PORT = _w.SPINE_PORT
+    CONFIG_SOURCE = "wifi.py"
+except ImportError:
+    MODE = "sta"
+    AP_SSID, AP_PASS, AP_CHANNEL = "cores3", "cores3123", 6
+    STA_SSID, STA_PASS = "Lee", "coffeepot"
+    SPINE_HOST_AP, SPINE_HOST_STA = "192.168.4.2", "10.0.0.2"
+    SPINE_PORT = 8765
+    CONFIG_SOURCE = "defaults"
 
-# Access point (when MODE == "ap")
-AP_SSID = "cores3"
-AP_PASS = "cores3123"
-AP_CHANNEL = 6
-
-# Station (when MODE == "sta")
-STA_SSID = "Lee"
-STA_PASS = "coffeepot"
-
-# Spine WebSocket server (laptop running spine.py).
-# Set the static IP your laptop has on each network.
-SPINE_HOST_AP = "192.168.4.2"     # laptop's manual IP on the cores3 AP
-SPINE_HOST_STA = "10.0.0.2"       # laptop's static IP on Lee (assign manually on the ethernet dongle)
-SPINE_PORT = 8765
 HEARTBEAT_INTERVAL = 5  # seconds
 
 # ── Display helper ─────────────────────────────────────────────────────────

@@ -25,11 +25,22 @@ import math
 from machine import Pin, I2C, PWM
 
 # ── Config ──────────────────────────────────────────────────────────────────
+# Prefer wifi.py if flashed alongside main.py; otherwise use defaults below.
+# The pebble only does STA, so AP_* fields in wifi.py are ignored here.
 
-WIFI_SSID = "아저씨"
-WIFI_PASS = "d3im-raqfeo-usd12"
-SPINE_HOST = "10.0.0.100"
-SPINE_PORT = 8765
+try:
+    import wifi as _w
+    WIFI_SSID, WIFI_PASS = _w.STA_SSID, _w.STA_PASS
+    SPINE_HOST = _w.SPINE_HOST_STA
+    SPINE_PORT = _w.SPINE_PORT
+    CONFIG_SOURCE = "wifi.py"
+except ImportError:
+    WIFI_SSID = "아저씨"
+    WIFI_PASS = "d3im-raqfeo-usd12"
+    SPINE_HOST = "10.0.0.100"
+    SPINE_PORT = 8765
+    CONFIG_SOURCE = "defaults"
+
 HEARTBEAT_INTERVAL = 5  # seconds
 
 # ── Kill motors immediately ─────────────────────────────────────────────────

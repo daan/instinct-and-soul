@@ -53,23 +53,25 @@ import math
 from machine import Pin, I2C, PWM
 
 # ── Config ──────────────────────────────────────────────────────────────────
+# Prefer wifi.py if flashed alongside main.py; otherwise use defaults below.
+# SPINE_HOST_* is the laptop's IP (manual on AP, static on STA).
 
-MODE = "sta"  # "ap" or "sta"
+try:
+    import wifi as _w
+    MODE = _w.MODE
+    AP_SSID, AP_PASS, AP_CHANNEL = _w.AP_SSID, _w.AP_PASS, _w.AP_CHANNEL
+    STA_SSID, STA_PASS = _w.STA_SSID, _w.STA_PASS
+    SPINE_HOST_AP, SPINE_HOST_STA = _w.SPINE_HOST_AP, _w.SPINE_HOST_STA
+    SPINE_PORT = _w.SPINE_PORT
+    CONFIG_SOURCE = "wifi.py"
+except ImportError:
+    MODE = "sta"
+    AP_SSID, AP_PASS, AP_CHANNEL = "pebble", "pebble123", 6
+    STA_SSID, STA_PASS = "Lee", "coffeepot"
+    SPINE_HOST_AP, SPINE_HOST_STA = "192.168.4.2", "10.0.0.4"
+    SPINE_PORT = 8765
+    CONFIG_SOURCE = "defaults"
 
-# Access point (when MODE == "ap")
-AP_SSID = "pebble"
-AP_PASS = "pebble123"
-AP_CHANNEL = 6
-
-# Station (when MODE == "sta")
-STA_SSID = "Lee"
-STA_PASS = "coffeepot"
-
-# Spine WebSocket server (on the laptop running spine.py).
-# Laptop uses a static IP on each network — set one per mode.
-SPINE_HOST_AP = "192.168.4.2"      # laptop's manual IP on the pebble AP
-SPINE_HOST_STA = "10.0.0.2"        # laptop's static IP on Lee (assign manually on the ethernet dongle)
-SPINE_PORT = 8765
 HEARTBEAT_INTERVAL = 5  # seconds
 
 # ── Display helper ─────────────────────────────────────────────────────────
