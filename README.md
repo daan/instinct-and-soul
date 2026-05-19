@@ -12,6 +12,30 @@ We demonstrate the architecture through two physical forms sharing the same char
 
 The system is designed for micro controllers running micropython and have a wifi network. I tested "creatures with esp32c3 or esp32s3 micro controllers, such as the seeed studio XIAO and M5STACK STICKS3 and CORES3. 
 
+```
+git clone git@github.com:daan/instinct-and-soul.git
+cd instinct-and-soul
+uv sync
+source .venv/bin/activate
+```
+edit [networks/example.toml](networks/example.toml) with your network specifics
+
+attach your device (e.g. m5cores3) you might need to [edit boot.py](INSTALL.md#uiflow-boards-cores3-sticks3) 
+
+```
+flash creatures/cores3 --wifi lee 
+```
+you should see the network status on the display.
+
+run the interactive tuner (no llm required) 
+```
+tune creatures/cores3
+```
+or run spine (you need your anthropic key)
+```
+spine creatures/cores3
+```
+
 Start with the [installation guide](INSTALL.md) for detailed instructions.
 
 Each runnable thing is a **creature**: a folder under `creatures/` that bundles a body (MicroPython runtime + hardware description) with a character (desire + initial personality + initial instinct code). Two creatures are included:
@@ -23,6 +47,7 @@ To run one, point the spine at it:
 
 ```
 spine creatures/touchy-pebble
+
 ```
 
 To make a new variant — same body, different goal — copy the folder and edit `character.md` and `seed_experience.md`.
