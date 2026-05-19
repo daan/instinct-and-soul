@@ -5,3 +5,7 @@ __pycache__/
 # Per-creature session logs — contain interaction data + Claude reflections.
 creatures/*/logs/
 
+# Network profiles — contain WiFi credentials. Only example.toml is checked in.
+networks/*.toml
+!networks/example.toml
+

@@ -1,0 +1,25 @@
+# networks/example.toml — template for a network profile.
+#
+# Copy this to networks/<name>.toml (e.g. networks/home.toml),
+# fill in your values, then:
+#   flash wifi home                       # flash wifi.py only
+#   flash creatures/cores3 --wifi home    # (step 3) flash both wifi.py and main.py
+#
+# Real profiles (networks/*.toml) are gitignored; this example is the
+# one file in the directory that is checked in.
+
+mode = "sta"  # "sta" (join existing WiFi) or "ap" (device hosts a network)
+
+# Access-point mode: device creates this WiFi, laptop joins it.
+ap_ssid    = "creature-ap"
+ap_pass    = "changeme123"
+ap_channel = 6
+
+# Station mode: device joins your existing WiFi.
+sta_ssid = "your-ssid"
+sta_pass = "your-password"
+
+# Spine host is your *laptop's* IP — manual on the AP, static on the STA.
+spine_host_ap  = "192.168.4.2"
+spine_host_sta = "10.0.0.2"
+spine_port     = 8765
