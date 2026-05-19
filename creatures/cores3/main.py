@@ -322,22 +322,22 @@ async def main():
 
 if MODE == "ap":
     SPINE_HOST = SPINE_HOST_AP
-    show(["mode: AP", "ssid: " + AP_SSID, "starting..."])
+    show(["mode: AP", "config: " + CONFIG_SOURCE, "ssid: " + AP_SSID, "starting..."])
     try:
         ip = start_ap(AP_SSID, AP_PASS, AP_CHANNEL)
     except Exception as e:
         show(["AP failed:", str(e)])
         raise
-    show(["AP: " + AP_SSID, "ip: " + ip, "spine: " + SPINE_HOST])
+    show(["AP: " + AP_SSID, "ip: " + ip, "spine: " + SPINE_HOST, "config: " + CONFIG_SOURCE])
 elif MODE == "sta":
     SPINE_HOST = SPINE_HOST_STA
-    show(["mode: STA", "ssid: " + STA_SSID, "connecting..."])
+    show(["mode: STA", "config: " + CONFIG_SOURCE, "ssid: " + STA_SSID, "connecting..."])
     try:
         ip = connect_sta(STA_SSID, STA_PASS)
     except Exception as e:
         show(["STA failed:", str(e)])
         raise
-    show(["STA: " + STA_SSID, "ip: " + ip, "spine: " + SPINE_HOST])
+    show(["STA: " + STA_SSID, "ip: " + ip, "spine: " + SPINE_HOST, "config: " + CONFIG_SOURCE])
 else:
     show(["bad MODE: " + str(MODE)])
     raise ValueError("MODE must be 'ap' or 'sta'")
