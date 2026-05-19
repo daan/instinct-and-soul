@@ -4,7 +4,8 @@ flash.py — copy MicroPython source onto a USB-attached board.
 Usage:
     flash creatures/cores3                   # copies main.py
     flash creatures/cores3 --port /dev/ttyACM0
-    flash wifi home                          # renders networks/home.toml -> wifi.py
+    flash creatures/cores3 --wifi home       # also flashes wifi.py from networks/home.toml
+    flash wifi home                          # renders networks/home.toml -> wifi.py only
     flash list-wifi                          # lists networks/*.toml profiles
 
 Without --port, looks for a single USB serial device and uses it.
@@ -89,23 +90,41 @@ def flash_creature(argv):
                         help="Path to a directory containing main.py (e.g. creatures/cores3)")
     parser.add_argument("--port", default=None,
                         help="Serial port (auto-detected if omitted)")
+    parser.add_argument("--wifi", default=None, metavar="PROFILE",
+                        help="Also flash wifi.py rendered from networks/<PROFILE>.toml before main.py")
     args = parser.parse_args(argv)
 
     main_py = os.path.join(args.creature_path, "main.py")
     if not os.path.isfile(main_py):
         parser.error("no main.py in {}".format(args.creature_path))
 
-    port = args.port or detect_port()
-    print("flash: {} -> {}".format(main_py, port))
+    wifi_tmp = None
+    if args.wifi:
+        cfg = load_profile(args.wifi)
+        body = render_wifi_py(cfg, args.wifi)
+        with tempfile.NamedTemporaryFile("w", suffix=".py", prefix="wifi_", delete=False) as tmp:
+            tmp.write(body)
+            wifi_tmp = tmp.name
 
-    cmds = [
-        ["mpremote", "connect", port, "cp", main_py, ":main.py"],
-        ["mpremote", "connect", port, "reset"],
-    ]
-    for cmd in cmds:
-        result = subprocess.run(cmd)
-        if result.returncode != 0:
-            sys.exit(result.returncode)
+    try:
+        port = args.port or detect_port()
+        if wifi_tmp:
+            print("flash: wifi '{}' + {} -> {}".format(args.wifi, main_py, port))
+        else:
+            print("flash: {} -> {}".format(main_py, port))
+
+        cmds = []
+        if wifi_tmp:
+            cmds.append(["mpremote", "connect", port, "cp", wifi_tmp, ":wifi.py"])
+        cmds.append(["mpremote", "connect", port, "cp", main_py, ":main.py"])
+        cmds.append(["mpremote", "connect", port, "reset"])
+        for cmd in cmds:
+            result = subprocess.run(cmd)
+            if result.returncode != 0:
+                sys.exit(result.returncode)
+    finally:
+        if wifi_tmp:
+            os.unlink(wifi_tmp)
 
 
 def flash_wifi(argv):

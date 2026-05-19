@@ -3,7 +3,7 @@
 # Copy this to networks/<name>.toml (e.g. networks/home.toml),
 # fill in your values, then:
 #   flash wifi home                       # flash wifi.py only
-#   flash creatures/cores3 --wifi home    # (step 3) flash both wifi.py and main.py
+#   flash creatures/cores3 --wifi home    # flash both wifi.py and main.py
 #
 # Real profiles (networks/*.toml) are gitignored; this example is the
 # one file in the directory that is checked in.
