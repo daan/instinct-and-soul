@@ -1,0 +1,9 @@
+# OpenRouter profile. Copy to openrouter.toml and fill in api_key.
+# Pick any model from https://openrouter.ai/models — the `model` string is
+# what OpenRouter expects in its API call (e.g. "moonshot/kimi-k2",
+# "anthropic/claude-opus-4-7", "deepseek/deepseek-r1").
+
+api      = "openai"
+model    = "moonshot/kimi-k2"
+api_key  = "sk-or-..."
+base_url = "https://openrouter.ai/api/v1"

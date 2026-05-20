@@ -1,0 +1,10 @@
+# Alternate LLM profile. Copy to <name>.toml (e.g. my-claude.toml) and
+# select with `spine --llm <name>`.
+#
+# Each file is one LLM: api + model + key, plus optional base_url for
+# OpenAI-compatible endpoints (Groq, Together, OpenRouter, Ollama, vLLM, ...).
+
+api      = "anthropic"          # which API to speak: "anthropic" or "openai"
+model    = "claude-sonnet-4-6"
+api_key  = "sk-ant-..."
+# base_url = "..."              # optional, only for api = "openai"

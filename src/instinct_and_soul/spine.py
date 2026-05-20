@@ -15,7 +15,7 @@ Usage:
   spine creatures/touchy-pebble            # fresh session
   spine creatures/touchy-pebble --resume   # continue last session
 
-Requires: pip install websockets textual anthropic
+Requires: pip install websockets textual anthropic openai
 """
 
 import argparse
@@ -26,20 +26,13 @@ import os
 import re
 import time
 import websockets
-import anthropic
 from textual.app import App, ComposeResult
 from textual.widgets import Input, RichLog, Static
 
+from .llm import load_llm, compute_cost
+
 PORT = 8765
 HEARTBEAT_TIMEOUT = 12
-
-# USD per 1M tokens — (input, output). Cache reads price at ~0.1× input;
-# cache writes at ~1.25× input. Update if Anthropic changes pricing.
-MODEL_PRICES = {
-    "claude-sonnet-4-6":         (3.00, 15.00),
-    "claude-opus-4-7":           (15.00, 75.00),
-    "claude-haiku-4-5-20251001": (0.80,  4.00),
-}
 
 
 def fmt_tokens(n):
@@ -47,21 +40,6 @@ def fmt_tokens(n):
     if n >= 1000:
         return "{:.1f}K".format(n / 1000)
     return str(n)
-
-
-def compute_cost(model, usage):
-    """Return USD cost given model id and a usage dict, or None if model unknown."""
-    if model not in MODEL_PRICES:
-        return None
-    in_price, out_price = MODEL_PRICES[model]
-    fresh_in    = usage.get("input_tokens", 0) or 0
-    cache_read  = usage.get("cache_read_input_tokens", 0) or 0
-    cache_write = usage.get("cache_creation_input_tokens", 0) or 0
-    out_tokens  = usage.get("output_tokens", 0) or 0
-    return (fresh_in * in_price
-            + cache_read * in_price * 0.1
-            + cache_write * in_price * 1.25
-            + out_tokens * out_price) / 1_000_000
 
 # ── Creature loading ───────────────────────────────────────────────────────
 
@@ -141,14 +119,14 @@ class VersionStore:
         for subdir in ("instinct", "experience", "reflections", "crashes", "memory"):
             os.makedirs(os.path.join(self.base, subdir), exist_ok=True)
 
-    def save_session_config(self, system_prompt, character, model=None, resumed_from=None):
+    def save_session_config(self, system_prompt, character, llm_info=None, resumed_from=None):
         path = os.path.join(self.base, "session.json")
         with open(path, "w") as f:
             json.dump({
                 "session_id": self.session_id,
                 "ts": int(time.time()),
                 "resumed_from": resumed_from,
-                "model": model,
+                "llm": llm_info,
                 "system_prompt": system_prompt,
                 "character": character,
             }, f, indent=2)
@@ -242,15 +220,15 @@ class SpineApp(App):
 
     BINDINGS = [("ctrl+c", "quit", "Quit"), ("escape", "quit", "Quit"), ("ctrl+q", "quit", "Quit")]
 
-    def __init__(self, creature, resume=False, model="claude-sonnet-4-6"):
+    def __init__(self, creature, resume=False, llm=None, llm_info=None):
         super().__init__()
         self.creature = creature
-        self.model = model
+        self.llm = llm
+        self.llm_info = llm_info or {}
+        self.model = self.llm_info.get("model")
         self.board_ws = None
         self.last_heartbeat = 0.0
         self._ws_server = None
-
-        self.client = anthropic.AsyncAnthropic()
 
         # Resume state must be loaded BEFORE VersionStore creates the new
         # session dir, otherwise find_last_session() picks up the just-created
@@ -278,7 +256,7 @@ class SpineApp(App):
         self.last_crash_msg = ""
         self.reflecting = False
         self.session_usage = {
-            "model": model,
+            "llm": self.llm_info,
             "started_at": int(time.time()),
             "updated_at": int(time.time()),
             "reflections": 0,
@@ -290,7 +268,7 @@ class SpineApp(App):
         }
 
         # save session config and initial state
-        self.store.save_session_config(creature.system_prompt, creature.character, self.model, self.resumed_from)
+        self.store.save_session_config(creature.system_prompt, creature.character, self.llm_info, self.resumed_from)
         self.store.save_seeds(creature)
         seq = self.store.next_seq()
         self.instinct_version = seq
@@ -325,33 +303,16 @@ class SpineApp(App):
         self.set_interval(1, self.update_status)
         self.log_msg("creature: {}".format(self.creature.name), style="bold")
         self.log_msg("session: {}".format(self.store.session_id), style="bold")
-        self.log_msg("model: {}".format(self.model), style="bold")
+        llm_label = self.llm_info.get("llm") or "{}/{}".format(
+            self.llm_info.get("api"), self.llm_info.get("model"))
+        self.log_msg("llm: {}".format(llm_label), style="bold")
         if self.resumed_from:
             self.log_msg("resumed from: {}".format(self.resumed_from), style="cyan")
         self.log_msg("spine: listening on port {}".format(PORT))
 
     async def call_llm(self, system_prompt, user_message):
-        """Provider-agnostic wrapper. Returns {"text": str, "usage": {...}}."""
-        response = await self.client.messages.create(
-            model=self.model,
-            max_tokens=4096,
-            system=[{
-                "type": "text",
-                "text": system_prompt,
-                "cache_control": {"type": "ephemeral", "ttl": "1h"},
-            }],
-            messages=[{"role": "user", "content": user_message}],
-            extra_headers={"anthropic-beta": "extended-cache-ttl-2025-04-11"},
-        )
-        return {
-            "text": response.content[0].text,
-            "usage": {
-                "input_tokens": response.usage.input_tokens,
-                "cache_read_input_tokens": getattr(response.usage, "cache_read_input_tokens", 0) or 0,
-                "cache_creation_input_tokens": getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
-                "output_tokens": response.usage.output_tokens,
-            },
-        }
+        """Delegate to the active LLMClient. Returns {"text", "usage"}."""
+        return await self.llm.call(system_prompt, user_message)
 
     def log_msg(self, msg, style=""):
         ts = time.strftime("%H:%M:%S")
@@ -578,14 +539,16 @@ def main():
                         help="Path to the creature directory (e.g. creatures/touchy-pebble)")
     parser.add_argument("--resume", action="store_true",
                         help="Resume from the last session's final experience/instinct")
-    parser.add_argument("--model", default="claude-sonnet-4-6",
-                        help="Claude model id (e.g. claude-sonnet-4-6, claude-opus-4-7, "
-                             "claude-haiku-4-5-20251001). Recorded in session.json.")
+    parser.add_argument("--llm", default=None, metavar="NAME",
+                        help="LLM profile to use, read from .config/llm/<NAME>.toml. "
+                             "Overrides the default in .config/config.toml.")
     args = parser.parse_args()
     creature = Creature(args.creature_path)
+    llm, llm_info = load_llm(args.llm)
     # mouse=False disables Textual's mouse capture so the terminal can
     # handle drag-selection — lets you copy text out of the log panel.
-    SpineApp(creature=creature, resume=args.resume, model=args.model).run(mouse=False)
+    SpineApp(creature=creature, resume=args.resume,
+             llm=llm, llm_info=llm_info).run(mouse=False)
 
 
 if __name__ == "__main__":

@@ -31,9 +31,13 @@ run the interactive tuner (no llm required)
 ```
 tune creatures/cores3
 ```
-or run spine (you need your anthropic key)
+or run spine. By default it uses Anthropic Claude Sonnet — set `ANTHROPIC_API_KEY` in your env and you're done:
 ```
 spine creatures/cores3
+```
+To use a different model or API (OpenAI-compatible endpoints like OpenRouter, Ollama, Groq, …), copy [.config/config.example.toml](.config/config.example.toml) to `.config/config.toml` and edit, or drop a profile file into `.config/llm/` (see [.config/llm/example.toml](.config/llm/example.toml)) and pass `--llm <name>`:
+```
+spine creatures/cores3 --llm openrouter
 ```
 
 Start with the [installation guide](INSTALL.md) for detailed instructions.

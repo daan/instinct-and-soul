@@ -9,3 +9,10 @@ creatures/*/logs/
 .config/networks/*.toml
 !.config/networks/example.toml
 
+# Main config + LLM profiles — contain API keys. Only example.toml and
+# *.example.toml templates are checked in.
+.config/config.toml
+.config/llm/*.toml
+!.config/llm/example.toml
+!.config/llm/*.example.toml
+

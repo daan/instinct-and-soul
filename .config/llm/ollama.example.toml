@@ -1,0 +1,8 @@
+# Local Ollama profile. Copy to ollama.toml and edit if needed.
+# Requires `ollama serve` running locally with the model pulled
+# (e.g. `ollama pull llama3.3:70b`).
+
+api      = "openai"
+model    = "llama3.3:70b"
+api_key  = "ollama"                       # ignored by ollama; any non-empty string
+base_url = "http://localhost:11434/v1"
