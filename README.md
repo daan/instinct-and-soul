@@ -18,7 +18,7 @@ cd instinct-and-soul
 uv sync
 source .venv/bin/activate
 ```
-edit [networks/example.toml](networks/example.toml) with your network specifics
+edit [.config/networks/example.toml](.config/networks/example.toml) with your network specifics
 
 attach your device (e.g. m5cores3) you might need to [edit boot.py](INSTALL.md#uiflow-boards-cores3-sticks3) 
 

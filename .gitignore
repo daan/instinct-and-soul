@@ -6,6 +6,6 @@ __pycache__/
 creatures/*/logs/
 
 # Network profiles — contain WiFi credentials. Only example.toml is checked in.
-networks/*.toml
-!networks/example.toml
+.config/networks/*.toml
+!.config/networks/example.toml
 
