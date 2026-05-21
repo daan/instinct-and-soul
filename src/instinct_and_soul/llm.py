@@ -18,13 +18,12 @@ Config files searched in this order:
     2. ~/.config/instinct-and-soul/<rel>
 """
 
-import os
-import tomllib
 from abc import ABC, abstractmethod
-from pathlib import Path
 
 import anthropic
 import openai
+
+from . import _config
 
 
 # ── Pricing ────────────────────────────────────────────────────────────────
@@ -139,38 +138,6 @@ class OpenAIClient(LLMClient):
 
 # ── Config loading ─────────────────────────────────────────────────────────
 
-def _config_search_paths(rel):
-    return [
-        Path.cwd() / ".config" / rel,
-        Path.home() / ".config" / "instinct-and-soul" / rel,
-    ]
-
-
-def _find_config(rel):
-    for p in _config_search_paths(rel):
-        if p.is_file():
-            return p
-    return None
-
-
-def _load_config_toml():
-    p = _find_config("config.toml")
-    if p is None:
-        return {}
-    with open(p, "rb") as f:
-        return tomllib.load(f)
-
-
-def _load_profile(name):
-    p = _find_config(os.path.join("llm", name + ".toml"))
-    if p is None:
-        searched = ", ".join(str(s) for s in _config_search_paths(os.path.join("llm", name + ".toml")))
-        raise FileNotFoundError(
-            "llm profile '{}' not found. Searched: {}".format(name, searched))
-    with open(p, "rb") as f:
-        return tomllib.load(f)
-
-
 def _client_from_dict(d):
     api = d.get("api")
     model = d.get("model")
@@ -198,14 +165,14 @@ def load_llm(name=None):
     The `llm` field is the profile name when one was used, else None.
     """
     if name:
-        client = _client_from_dict(_load_profile(name))
+        client = _client_from_dict(_config.load_profile("llm", name))
         return client, _info(name, client)
 
-    cfg = _load_config_toml()
+    cfg = _config.load_config_toml()
     llm_entry = cfg.get("llm")
     # Notation B — shorthand: llm = "name" → load .config/llm/<name>.toml
     if isinstance(llm_entry, str):
-        client = _client_from_dict(_load_profile(llm_entry))
+        client = _client_from_dict(_config.load_profile("llm", llm_entry))
         return client, _info(llm_entry, client)
     # Notation A — inline [llm] block
     if isinstance(llm_entry, dict):
