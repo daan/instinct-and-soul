@@ -277,6 +277,31 @@ async def swap_instinct(code):
     print("instinct: swapped ({} bytes)".format(len(code)))
 
 
+last_session_id = None
+
+async def session_start_cleanup():
+    """Called when spine reports a new session. Stop the running instinct
+    and reset visible/audible hardware so the next swap_instinct starts clean."""
+    global current_task
+    if current_task:
+        current_task.cancel()
+        try:
+            await current_task
+        except asyncio.CancelledError:
+            pass
+        current_task = None
+    M5.Display.fillScreen(0x000000)
+    # Same Grove-vibration reset as the boot block at the top of main.py.
+    _p = PWM(Pin(1), freq=5000, duty=0)
+    _p.deinit()
+    Pin(1, Pin.OUT, value=0)
+    try:
+        Speaker.stop()
+    except Exception:
+        pass
+    print("session: cleaned up")
+
+
 async def heartbeat():
     while True:
         M5.update()
@@ -290,7 +315,7 @@ async def heartbeat():
 
 
 async def ws_listener():
-    global ws
+    global ws, last_session_id
     print("ws: connecting to {}:{}".format(SPINE_HOST, SPINE_PORT))
     ws = WebSocket.connect(SPINE_HOST, SPINE_PORT)
     print("ws: connected")
@@ -303,6 +328,16 @@ async def ws_listener():
         if msg is None:
             print("ws: closed by server")
             break
+        if msg.startswith("SESSION:"):
+            sid = msg[len("SESSION:"):]
+            # First SESSION since boot: hardware is already clean from main.py.
+            # Different id from before: spine was restarted — clean up.
+            # Same id: same session reconnecting (e.g. brief disconnect) — leave alone.
+            if last_session_id is not None and last_session_id != sid:
+                await session_start_cleanup()
+            last_session_id = sid
+            print("session: {}".format(sid))
+            continue
         await swap_instinct(msg)
 
 

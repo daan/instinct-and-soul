@@ -355,6 +355,13 @@ class SpineApp(App):
         addr = ws.remote_address
         self.log_msg("board connected from {}:{}".format(addr[0], addr[1]), style="green")
 
+        # Send session id first so the device can detect a fresh-spine
+        # restart vs a same-session reconnect / reflection update.
+        # On --resume we send the resumed-from id, so the device treats
+        # it as a continuation and doesn't clear screen/actuators.
+        session_id = self.resumed_from or self.store.session_id
+        await ws.send("SESSION:" + session_id)
+
         await ws.send(self.current_instinct)
         self.log_msg("sent instinct v{}".format(self.instinct_version), style="dim")
 

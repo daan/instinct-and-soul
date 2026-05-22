@@ -115,9 +115,11 @@ class OpenAIClient(LLMClient):
         self.client = openai.AsyncOpenAI(**kwargs)
 
     async def call(self, system_prompt, user_message):
+        # 16K leaves room for reasoning-token models (Kimi K2.6, DeepSeek R1)
+        # that burn output tokens on hidden thinking before the visible reply.
         response = await self.client.chat.completions.create(
             model=self.model,
-            max_tokens=4096,
+            max_tokens=16384,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
