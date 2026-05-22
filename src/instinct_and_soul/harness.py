@@ -63,6 +63,7 @@ class TuneAppBase(App):
         self._ws_server = None
         self.cmd_history = []
         self.history_index = -1
+        self._rejected_seen = set()
 
     def on_mount(self) -> None:
         self.run_worker(self.ws_server(), exclusive=False)
@@ -86,6 +87,14 @@ class TuneAppBase(App):
             log.write("[{}]{}[/{}]  {}".format(style, ts, style, msg))
         else:
             log.write("{}  {}".format(ts, msg))
+
+    def _reject(self, ip, declared):
+        key = (ip, declared)
+        if key in self._rejected_seen:
+            return
+        self._rejected_seen.add(key)
+        expected = self.STATUS_LABEL or "<any>"
+        self.log_msg("rejected {} from {} (expected {})".format(declared, ip, expected), style="yellow")
 
     def update_status(self) -> None:
         try:
@@ -122,10 +131,32 @@ class TuneAppBase(App):
             event.prevent_default()
 
     async def ws_handler(self, ws):
-        self.board_ws = ws
         self.last_heartbeat = time.time()
         addr = ws.remote_address
-        self.log_msg("board connected from {}:{}".format(addr[0], addr[1]), style="green")
+
+        # First message must be HELLO:<creature-name>. Refuses boards running
+        # a different creature so they don't choke on foreign code. Repeat
+        # offenders (same ip+name) are closed silently to keep the log clean.
+        try:
+            hello = await asyncio.wait_for(ws.recv(), timeout=5.0)
+        except (asyncio.TimeoutError, Exception):
+            self._reject(addr[0], "<no HELLO>")
+            await ws.close()
+            return
+        if not isinstance(hello, str) or not hello.startswith("HELLO:"):
+            preview = hello[:40] if isinstance(hello, str) else repr(hello)[:40]
+            self._reject(addr[0], "<bad HELLO {!r}>".format(preview))
+            await ws.close()
+            return
+        declared = hello[len("HELLO:"):]
+        if self.STATUS_LABEL and declared != self.STATUS_LABEL:
+            self._reject(addr[0], declared)
+            await ws.close()
+            return
+
+        self.log_msg("board connected from {}:{} ({})".format(addr[0], addr[1], declared), style="green")
+
+        self.board_ws = ws
 
         if self.INITIAL_INSTINCT is not None:
             await ws.send(self.INITIAL_INSTINCT)

@@ -28,6 +28,8 @@ from machine import Pin, I2C, PWM
 # Prefer wifi.py if flashed alongside main.py; otherwise use defaults below.
 # The pebble only does STA, so AP_* fields in wifi.py are ignored here.
 
+CREATURE_NAME = "touchy-pebble"
+
 try:
     import wifi as _w
     WIFI_SSID, WIFI_PASS = _w.STA_SSID, _w.STA_PASS
@@ -250,6 +252,24 @@ async def swap_instinct(code):
     print("instinct: swapped ({} bytes)".format(len(code)))
 
 
+last_session_id = None
+
+async def session_start_cleanup():
+    """Called when spine reports a new session. Stop the running instinct
+    and reset visible/audible hardware so the next swap_instinct starts clean."""
+    global current_task
+    if current_task:
+        current_task.cancel()
+        try:
+            await current_task
+        except asyncio.CancelledError:
+            pass
+        current_task = None
+    Pin(9, Pin.OUT, value=0)
+    Pin(10, Pin.OUT, value=0)
+    print("session: cleaned up")
+
+
 # ── Default instinct: idle, waiting for soul ────────────────────────────────
 
 DEFAULT_INSTINCT = """
@@ -277,11 +297,12 @@ async def heartbeat():
 
 async def ws_listener():
     """Listen for instinct code from spine, hot-swap on arrival."""
-    global ws
+    global ws, last_session_id
 
     print("ws: connecting to {}:{}".format(SPINE_HOST, SPINE_PORT))
     ws = WebSocket.connect(SPINE_HOST, SPINE_PORT)
     print("ws: connected")
+    ws.send("HELLO:" + CREATURE_NAME)
 
     while True:
         try:
@@ -293,6 +314,14 @@ async def ws_listener():
         if msg is None:
             print("ws: connection closed by server")
             break
+
+        if msg.startswith("SESSION:"):
+            sid = msg[len("SESSION:"):]
+            if last_session_id is not None and last_session_id != sid:
+                await session_start_cleanup()
+            last_session_id = sid
+            print("session: {}".format(sid))
+            continue
 
         # All incoming messages are instinct code
         await swap_instinct(msg)

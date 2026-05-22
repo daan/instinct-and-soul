@@ -252,6 +252,7 @@ class SpineApp(App):
         self.instinct_version = 0
         self.experience_version = 0
         self.messages_since_last = []
+        self._rejected_seen = set()  # (ip, declared_name) we've already warned about
         self.last_crashed = False
         self.last_crash_msg = ""
         self.reflecting = False
@@ -325,6 +326,14 @@ class SpineApp(App):
         else:
             log.write("{}  {}".format(ts, msg))
 
+    def _reject(self, ip, declared):
+        key = (ip, declared)
+        if key in self._rejected_seen:
+            return
+        self._rejected_seen.add(key)
+        self.log_msg("rejected {} from {} (expected {})".format(
+            declared, ip, self.creature.name), style="yellow")
+
     def update_status(self) -> None:
         try:
             status = self.query_one("#status", Static)
@@ -350,10 +359,32 @@ class SpineApp(App):
             status.update("[bold red]● disconnected[/]  {}".format(prefix))
 
     async def ws_handler(self, ws):
-        self.board_ws = ws
         self.last_heartbeat = time.time()
         addr = ws.remote_address
-        self.log_msg("board connected from {}:{}".format(addr[0], addr[1]), style="green")
+
+        # First message must be HELLO:<creature-name>. Refuses boards running
+        # a different creature so they don't choke on foreign code. Repeat
+        # offenders (same ip+name) are closed silently to keep the log clean.
+        try:
+            hello = await asyncio.wait_for(ws.recv(), timeout=5.0)
+        except (asyncio.TimeoutError, Exception):
+            self._reject(addr[0], "<no HELLO>")
+            await ws.close()
+            return
+        if not isinstance(hello, str) or not hello.startswith("HELLO:"):
+            preview = hello[:40] if isinstance(hello, str) else repr(hello)[:40]
+            self._reject(addr[0], "<bad HELLO {!r}>".format(preview))
+            await ws.close()
+            return
+        declared = hello[len("HELLO:"):]
+        if declared != self.creature.name:
+            self._reject(addr[0], declared)
+            await ws.close()
+            return
+
+        self.log_msg("board connected from {}:{} ({})".format(addr[0], addr[1], declared), style="green")
+
+        self.board_ws = ws
 
         # Send session id first so the device can detect a fresh-spine
         # restart vs a same-session reconnect / reflection update.
