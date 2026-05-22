@@ -19,12 +19,19 @@ def main():
     parser = argparse.ArgumentParser(description="Launch a creature's tuner")
     parser.add_argument("creature_path",
                         help="Path to the creature directory (e.g. creatures/cores3)")
+    parser.add_argument("--creature-ip", default=None, metavar="IP",
+                        help="Only accept connections from this board IP. "
+                             "If omitted, locks to whichever board connects first.")
     args = parser.parse_args()
 
     creature_dir = os.path.abspath(args.creature_path)
     tune_file = os.path.join(creature_dir, "tune.py")
     if not os.path.isfile(tune_file):
         parser.error("no tune.py in {}".format(creature_dir))
+
+    # Pass --creature-ip to the harness via env var; TuneAppBase reads it.
+    if args.creature_ip:
+        os.environ["INSTINCT_CREATURE_IP"] = args.creature_ip
 
     # Let the creature's tune.py do `from recipes import ...`.
     sys.path.insert(0, creature_dir)

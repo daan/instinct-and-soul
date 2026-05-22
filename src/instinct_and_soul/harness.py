@@ -63,6 +63,11 @@ class TuneAppBase(App):
         self._ws_server = None
         self.cmd_history = []
         self.history_index = -1
+        # locked_ip pins the session to one board. Source priority:
+        # 1. INSTINCT_CREATURE_IP env var (set by `tune --creature-ip <IP>`)
+        # 2. None → locks to whichever board connects first.
+        import os as _os
+        self.locked_ip = _os.environ.get("INSTINCT_CREATURE_IP") or None
         self._rejected_seen = set()
 
     def on_mount(self) -> None:
@@ -88,13 +93,11 @@ class TuneAppBase(App):
         else:
             log.write("{}  {}".format(ts, msg))
 
-    def _reject(self, ip, declared):
-        key = (ip, declared)
-        if key in self._rejected_seen:
+    def _reject(self, ip):
+        if ip in self._rejected_seen:
             return
-        self._rejected_seen.add(key)
-        expected = self.STATUS_LABEL or "<any>"
-        self.log_msg("rejected {} from {} (expected {})".format(declared, ip, expected), style="yellow")
+        self._rejected_seen.add(ip)
+        self.log_msg("rejected board at {} (locked to {})".format(ip, self.locked_ip), style="yellow")
 
     def update_status(self) -> None:
         try:
@@ -134,27 +137,17 @@ class TuneAppBase(App):
         self.last_heartbeat = time.time()
         addr = ws.remote_address
 
-        # First message must be HELLO:<creature-name>. Refuses boards running
-        # a different creature so they don't choke on foreign code. Repeat
-        # offenders (same ip+name) are closed silently to keep the log clean.
-        try:
-            hello = await asyncio.wait_for(ws.recv(), timeout=5.0)
-        except (asyncio.TimeoutError, Exception):
-            self._reject(addr[0], "<no HELLO>")
-            await ws.close()
-            return
-        if not isinstance(hello, str) or not hello.startswith("HELLO:"):
-            preview = hello[:40] if isinstance(hello, str) else repr(hello)[:40]
-            self._reject(addr[0], "<bad HELLO {!r}>".format(preview))
-            await ws.close()
-            return
-        declared = hello[len("HELLO:"):]
-        if self.STATUS_LABEL and declared != self.STATUS_LABEL:
-            self._reject(addr[0], declared)
+        # First-board-wins lock. Subclasses or callers can pre-set
+        # self.locked_ip to pin the session to a specific board.
+        if self.locked_ip is None:
+            self.locked_ip = addr[0]
+            self.log_msg("locked to board at {}".format(self.locked_ip), style="dim")
+        elif addr[0] != self.locked_ip:
+            self._reject(addr[0])
             await ws.close()
             return
 
-        self.log_msg("board connected from {}:{} ({})".format(addr[0], addr[1], declared), style="green")
+        self.log_msg("board connected from {}:{}".format(addr[0], addr[1]), style="green")
 
         self.board_ws = ws
 

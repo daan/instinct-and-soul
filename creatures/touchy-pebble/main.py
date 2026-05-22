@@ -28,8 +28,6 @@ from machine import Pin, I2C, PWM
 # Prefer wifi.py if flashed alongside main.py; otherwise use defaults below.
 # The pebble only does STA, so AP_* fields in wifi.py are ignored here.
 
-CREATURE_NAME = "touchy-pebble"
-
 try:
     import wifi as _w
     WIFI_SSID, WIFI_PASS = _w.STA_SSID, _w.STA_PASS
@@ -302,7 +300,6 @@ async def ws_listener():
     print("ws: connecting to {}:{}".format(SPINE_HOST, SPINE_PORT))
     ws = WebSocket.connect(SPINE_HOST, SPINE_PORT)
     print("ws: connected")
-    ws.send("HELLO:" + CREATURE_NAME)
 
     while True:
         try:

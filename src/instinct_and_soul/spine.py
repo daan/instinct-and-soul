@@ -220,7 +220,7 @@ class SpineApp(App):
 
     BINDINGS = [("ctrl+c", "quit", "Quit"), ("escape", "quit", "Quit"), ("ctrl+q", "quit", "Quit")]
 
-    def __init__(self, creature, resume=False, llm=None, llm_info=None):
+    def __init__(self, creature, resume=False, llm=None, llm_info=None, creature_ip=None):
         super().__init__()
         self.creature = creature
         self.llm = llm
@@ -252,7 +252,10 @@ class SpineApp(App):
         self.instinct_version = 0
         self.experience_version = 0
         self.messages_since_last = []
-        self._rejected_seen = set()  # (ip, declared_name) we've already warned about
+        # locked_ip pins the session to one board: explicitly via --creature-ip,
+        # or to whichever board connects first. Other IPs are rejected.
+        self.locked_ip = creature_ip
+        self._rejected_seen = set()  # IPs we've already warned about
         self.last_crashed = False
         self.last_crash_msg = ""
         self.reflecting = False
@@ -326,13 +329,11 @@ class SpineApp(App):
         else:
             log.write("{}  {}".format(ts, msg))
 
-    def _reject(self, ip, declared):
-        key = (ip, declared)
-        if key in self._rejected_seen:
+    def _reject(self, ip):
+        if ip in self._rejected_seen:
             return
-        self._rejected_seen.add(key)
-        self.log_msg("rejected {} from {} (expected {})".format(
-            declared, ip, self.creature.name), style="yellow")
+        self._rejected_seen.add(ip)
+        self.log_msg("rejected board at {} (locked to {})".format(ip, self.locked_ip), style="yellow")
 
     def update_status(self) -> None:
         try:
@@ -362,27 +363,19 @@ class SpineApp(App):
         self.last_heartbeat = time.time()
         addr = ws.remote_address
 
-        # First message must be HELLO:<creature-name>. Refuses boards running
-        # a different creature so they don't choke on foreign code. Repeat
-        # offenders (same ip+name) are closed silently to keep the log clean.
-        try:
-            hello = await asyncio.wait_for(ws.recv(), timeout=5.0)
-        except (asyncio.TimeoutError, Exception):
-            self._reject(addr[0], "<no HELLO>")
-            await ws.close()
-            return
-        if not isinstance(hello, str) or not hello.startswith("HELLO:"):
-            preview = hello[:40] if isinstance(hello, str) else repr(hello)[:40]
-            self._reject(addr[0], "<bad HELLO {!r}>".format(preview))
-            await ws.close()
-            return
-        declared = hello[len("HELLO:"):]
-        if declared != self.creature.name:
-            self._reject(addr[0], declared)
+        # First-board-wins lock. If --creature-ip was passed, only that IP
+        # is ever accepted. Otherwise the first connecting board becomes
+        # the locked IP for the rest of the session. Other IPs are closed
+        # with a one-shot yellow log line.
+        if self.locked_ip is None:
+            self.locked_ip = addr[0]
+            self.log_msg("locked to board at {}".format(self.locked_ip), style="dim")
+        elif addr[0] != self.locked_ip:
+            self._reject(addr[0])
             await ws.close()
             return
 
-        self.log_msg("board connected from {}:{} ({})".format(addr[0], addr[1], declared), style="green")
+        self.log_msg("board connected from {}:{}".format(addr[0], addr[1]), style="green")
 
         self.board_ws = ws
 
@@ -554,15 +547,25 @@ class SpineApp(App):
         self.action_quit()
 
     def action_quit(self) -> None:
+        # Cancel in-flight LLM workers so textual's exit doesn't wait on them.
+        try:
+            self.workers.cancel_all()
+        except Exception:
+            pass
         if self.board_ws is not None:
-            self.board_ws.transport.close()
+            try:
+                self.board_ws.transport.close()
+            except Exception:
+                pass
         if self._ws_server is not None:
             self._ws_server.close()
         self.exit()
 
     async def ws_server(self):
         try:
-            self._ws_server = await websockets.serve(self.ws_handler, "0.0.0.0", PORT)
+            # close_timeout caps how long server.close() waits for clients to drain.
+            self._ws_server = await websockets.serve(
+                self.ws_handler, "0.0.0.0", PORT, close_timeout=0.5)
             await asyncio.Future()
         except asyncio.CancelledError:
             pass
@@ -580,13 +583,17 @@ def main():
     parser.add_argument("--llm", default=None, metavar="NAME",
                         help="LLM profile to use, read from .config/llm/<NAME>.toml. "
                              "Overrides the default in .config/config.toml.")
+    parser.add_argument("--creature-ip", default=None, metavar="IP",
+                        help="Only accept connections from this board IP. "
+                             "If omitted, locks to whichever board connects first.")
     args = parser.parse_args()
     creature = Creature(args.creature_path)
     llm, llm_info = load_llm(args.llm)
     # mouse=False disables Textual's mouse capture so the terminal can
     # handle drag-selection — lets you copy text out of the log panel.
     SpineApp(creature=creature, resume=args.resume,
-             llm=llm, llm_info=llm_info).run(mouse=False)
+             llm=llm, llm_info=llm_info,
+             creature_ip=args.creature_ip).run(mouse=False)
 
 
 if __name__ == "__main__":

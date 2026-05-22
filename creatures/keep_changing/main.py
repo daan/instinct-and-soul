@@ -56,8 +56,6 @@ from machine import Pin, I2C, PWM
 # Prefer wifi.py if flashed alongside main.py; otherwise use defaults below.
 # SPINE_HOST_* is the laptop's IP (manual on AP, static on STA).
 
-CREATURE_NAME = "keep_changing"
-
 try:
     import wifi as _w
     MODE = _w.MODE
@@ -323,7 +321,6 @@ async def ws_listener():
     print("ws: connecting to {}:{}".format(SPINE_HOST, SPINE_PORT))
     ws = WebSocket.connect(SPINE_HOST, SPINE_PORT)
     print("ws: connected")
-    ws.send("HELLO:" + CREATURE_NAME)
     while True:
         try:
             msg = await ws.recv()
