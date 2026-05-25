@@ -535,6 +535,20 @@ class SpineApp(App):
             self.store.save_reflection(seq, reflection)
 
         except Exception as e:
+            # Persist a failed-reflection record so the drained messages
+            # don't vanish from the on-disk trace. Tracer renders these as
+            # "reflection failed here" markers.
+            fseq = self.store.next_seq()
+            self.store.save_reflection(fseq, {
+                "seq": fseq,
+                "ts": time.time(),
+                "messages_since_last": messages,
+                "instinct_version_in": self.instinct_version,
+                "crashed": crashed,
+                "prompt": reflection_prompt,
+                "error": str(e),
+                "failed": True,
+            })
             self.log_msg("reflection error: {}".format(e), style="bold red")
         finally:
             self.reflecting = False
