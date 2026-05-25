@@ -1,41 +1,32 @@
 # Soul main config. Copy to config.toml and edit.
+
 #
 # Lookup order at startup:
 #   1. ./.config/config.toml                     (project-local, this directory)
 #   2. ~/.config/instinct-and-soul/config.toml   (user-global)
-# `spine --llm <name>` / `flash --wifi <name>` override the defaults below.
+# `spine --llm <name>` / `flash creature <name> --wifi <name>` override the defaults below.
+
+# use the wifi configuration found in .config/networks/home.toml
+#wifi=home
+
+# use the llm configuration found in .config/llm/openrouter.toml
+#llm=openrouter
+
+# or specify the wifi directly
+
+[wifi]
+mode       = "sta"		# or "ap" for accesspoint
+ssid       = "network"	
+pass       = "password"	
+spine_host = "192.168.1.50" 
 
 
-# ──────────────────────────── LLM ────────────────────────────
-# Two ways to set the default LLM. Pick one.
-#
-# Notation A — inline: write the LLM config here directly.
+# or specify the llm directly
+
 [llm]
 api      = "anthropic"          # which API to speak: "anthropic" or "openai"
 model    = "claude-sonnet-4-6"  # e.g. claude-opus-4-7, gpt-4o-mini, moonshot/kimi-k2
 api_key  = "sk-ant-..."
 # base_url = "..."              # optional, only for api = "openai"
 
-# Notation B — reference: point at a profile in .config/llm/
-# (Comment out the [llm] block above and uncomment this line.)
-# llm = "openrouter"            # reads .config/llm/openrouter.toml
 
-
-# ──────────────────────────── WiFi ───────────────────────────
-# Used by `flash creatures/<name>` (full install) and `flash wifi`.
-# Two ways to set the default network. Pick one.
-#
-# Notation A — inline (uncomment and fill in):
-# [wifi]
-# mode           = "sta"
-# ap_ssid        = "soul-ap"
-# ap_pass        = "soulsoul"
-# ap_channel     = 6
-# sta_ssid       = "your-network"
-# sta_pass       = "your-password"
-# spine_host_ap  = "192.168.4.1"
-# spine_host_sta = "192.168.1.50"
-# spine_port     = 9001
-
-# Notation B — reference:
-# wifi = "home"                 # reads .config/networks/home.toml

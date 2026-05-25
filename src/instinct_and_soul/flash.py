@@ -64,29 +64,34 @@ WIFI_PY_TEMPLATE = (
     "SPINE_PORT = {spine_port}\n"
 )
 
-_REQUIRED_COMMON = ["mode"]
-_REQUIRED_STA    = ["sta_ssid", "sta_pass", "spine_host_sta"]
-_REQUIRED_AP     = ["ap_ssid", "ap_pass", "ap_channel", "spine_host_ap"]
+_REQUIRED_COMMON = ["mode", "ssid", "pass", "spine_host"]
+_REQUIRED_AP_EXTRA = ["channel"]
 
-# Defaults filled in at render time so device-side falls through cleanly.
-# spine_port matches the constant in spine.py and the device's fallback.
-_WIFI_DEFAULTS = {
-    "mode": "",
-    "ap_ssid": "", "ap_pass": "", "ap_channel": 0,
-    "sta_ssid": "", "sta_pass": "",
-    "spine_host_ap": "", "spine_host_sta": "",
-    "spine_port": 8765,
+# Old prefixed keys, kept around only so we can emit a useful migration error.
+_LEGACY_KEYS = {
+    "sta_ssid", "sta_pass", "spine_host_sta",
+    "ap_ssid", "ap_pass", "ap_channel", "spine_host_ap",
 }
 
 
 def _check_required(cfg, label):
+    legacy = sorted(set(cfg) & _LEGACY_KEYS)
+    if legacy:
+        raise SystemExit(
+            "flash: {} uses legacy prefixed keys ({}). "
+            "Schema is now mode-neutral: use ssid, pass, spine_host "
+            "(and channel for ap). See .config/networks/example.toml."
+            .format(label, ", ".join(legacy)))
+
     mode = cfg.get("mode")
     if not mode:
         raise SystemExit("flash: {} missing key: mode".format(label))
     if mode not in ("sta", "ap"):
         raise SystemExit(
             "flash: {} invalid mode {!r} (expected 'sta' or 'ap')".format(label, mode))
-    required = _REQUIRED_COMMON + (_REQUIRED_STA if mode == "sta" else _REQUIRED_AP)
+    required = list(_REQUIRED_COMMON)
+    if mode == "ap":
+        required += _REQUIRED_AP_EXTRA
     missing = [k for k in required if k not in cfg]
     if missing:
         raise SystemExit(
@@ -121,8 +126,27 @@ def load_wifi(name=None):
 
 
 def render_wifi_py(cfg, source):
-    merged = {**_WIFI_DEFAULTS, **cfg}
-    return WIFI_PY_TEMPLATE.format(source=source, **merged)
+    # The device-side main.py imports flat STA_*/AP_* constants from wifi.py,
+    # so we project the mode-neutral cfg into the right slots here. The
+    # unused mode's fields get harmless defaults.
+    mode = cfg["mode"]
+    flat = {
+        "mode": mode,
+        "ap_ssid": "", "ap_pass": "", "ap_channel": 0,
+        "sta_ssid": "", "sta_pass": "",
+        "spine_host_ap": "", "spine_host_sta": "",
+        "spine_port": cfg.get("spine_port", 8765),
+    }
+    if mode == "sta":
+        flat["sta_ssid"] = cfg["ssid"]
+        flat["sta_pass"] = cfg["pass"]
+        flat["spine_host_sta"] = cfg["spine_host"]
+    else:
+        flat["ap_ssid"] = cfg["ssid"]
+        flat["ap_pass"] = cfg["pass"]
+        flat["ap_channel"] = cfg["channel"]
+        flat["spine_host_ap"] = cfg["spine_host"]
+    return WIFI_PY_TEMPLATE.format(source=source, **flat)
 
 
 def _device_has_wifi_py(port):
@@ -148,23 +172,10 @@ _NO_WIFI_HINT = (
 
 # ── Subcommands ────────────────────────────────────────────────────────────
 
-def flash_creature(argv):
-    parser = argparse.ArgumentParser(
-        prog="flash", description="Flash main.py (+ wifi.py) onto a board")
-    parser.add_argument("creature_path",
-                        help="Path to a directory containing main.py (e.g. creatures/cores3)")
-    parser.add_argument("--port", default=None,
-                        help="Serial port (auto-detected if omitted)")
-    wifi_group = parser.add_mutually_exclusive_group()
-    wifi_group.add_argument("--wifi", default=None, metavar="PROFILE",
-                            help="Override wifi profile from .config/networks/<PROFILE>.toml")
-    wifi_group.add_argument("--no-wifi", action="store_true",
-                            help="Skip wifi flash (write main.py only)")
-    args = parser.parse_args(argv)
-
+def flash_creature(args):
     main_py = os.path.join(args.creature_path, "main.py")
     if not os.path.isfile(main_py):
-        parser.error("no main.py in {}".format(args.creature_path))
+        raise SystemExit("flash: no main.py in {}".format(args.creature_path))
 
     port = args.port or detect_port()
 
@@ -214,16 +225,7 @@ def flash_creature(argv):
             os.unlink(wifi_tmp)
 
 
-def flash_wifi(argv):
-    parser = argparse.ArgumentParser(
-        prog="flash wifi",
-        description="Flash wifi.py from a named profile or .config/config.toml")
-    parser.add_argument("profile", nargs="?", default=None,
-                        help="Profile name (omit to use .config/config.toml)")
-    parser.add_argument("--port", default=None,
-                        help="Serial port (auto-detected if omitted)")
-    args = parser.parse_args(argv)
-
+def flash_wifi(args):
     cfg, src = load_wifi(args.profile)
     if cfg is None:
         raise SystemExit(
@@ -250,12 +252,7 @@ def flash_wifi(argv):
         os.unlink(tmp_path)
 
 
-def list_wifi(argv):
-    parser = argparse.ArgumentParser(
-        prog="flash list-wifi",
-        description="List network profiles in .config/networks/")
-    parser.parse_args(argv)
-
+def list_wifi(args):
     networks_dir = os.path.join(".config", "networks")
     if not os.path.isdir(networks_dir):
         print("no {}/ directory".format(networks_dir))
@@ -270,14 +267,70 @@ def list_wifi(argv):
 
 # ── Entry point ────────────────────────────────────────────────────────────
 
+def _build_parser():
+    parser = argparse.ArgumentParser(
+        prog="flash",
+        description="Flash MicroPython files onto an M5Stack board.",
+    )
+    sub = parser.add_subparsers(dest="cmd", metavar="COMMAND")
+
+    p_creature = sub.add_parser(
+        "creature",
+        help="Flash main.py (+ wifi.py) onto a board",
+        description="Flash main.py and (unless --no-wifi) wifi.py from a creature directory.",
+    )
+    p_creature.add_argument("creature_path",
+        help="Path to a directory containing main.py (e.g. creatures/cores3)")
+    p_creature.add_argument("--port", default=None,
+        help="Serial port (auto-detected if omitted)")
+    wifi_group = p_creature.add_mutually_exclusive_group()
+    wifi_group.add_argument("--wifi", default=None, metavar="PROFILE",
+        help="Override wifi profile from .config/networks/<PROFILE>.toml")
+    wifi_group.add_argument("--no-wifi", action="store_true",
+        help="Skip wifi flash (write main.py only)")
+    p_creature.set_defaults(func=flash_creature)
+
+    p_wifi = sub.add_parser(
+        "wifi",
+        help="Flash wifi.py only (no main.py)",
+        description="Write wifi.py to the device from a named profile or .config/config.toml.",
+    )
+    p_wifi.add_argument("profile", nargs="?", default=None,
+        help="Profile name (omit to use .config/config.toml)")
+    p_wifi.add_argument("--port", default=None,
+        help="Serial port (auto-detected if omitted)")
+    p_wifi.set_defaults(func=flash_wifi)
+
+    p_list = sub.add_parser(
+        "list-wifi",
+        help="List network profiles in .config/networks/",
+        description="List network profiles found in .config/networks/.",
+    )
+    p_list.set_defaults(func=list_wifi)
+
+    return parser
+
+
+_KNOWN_COMMANDS = {"creature", "wifi", "list-wifi"}
+
+
 def main():
     argv = sys.argv[1:]
-    if argv and argv[0] == "wifi":
-        flash_wifi(argv[1:])
-    elif argv and argv[0] == "list-wifi":
-        list_wifi(argv[1:])
-    else:
-        flash_creature(argv)
+
+    # Back-compat shortcut: `flash <path>` -> `flash creature <path>` when the
+    # first arg is neither a known subcommand nor a flag. Keeps existing muscle
+    # memory working after the subparser refactor.
+    if argv and argv[0] not in _KNOWN_COMMANDS and not argv[0].startswith("-"):
+        argv = ["creature"] + argv
+
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
+    if args.cmd is None:
+        parser.print_help()
+        sys.exit(2)
+
+    args.func(args)
 
 
 if __name__ == "__main__":
