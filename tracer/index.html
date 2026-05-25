@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Tracer — timeline</title>
+  <link rel="stylesheet" href="tracer.css">
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.8.5/dist/d3.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1 id="session-title">Loading…</h1>
+    <div class="help">Scroll to zoom · Drag to pan · Click an event for details</div>
+  </header>
+
+  <div class="legend" id="legend"></div>
+
+  <div class="timeline-container">
+    <svg id="timeline"></svg>
+  </div>
+
+  <div id="chat"></div>
+
+  <script type="module" src="tracer.js"></script>
+</body>
+</html>

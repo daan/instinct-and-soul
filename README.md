@@ -56,6 +56,27 @@ spine creatures/touchy-pebble
 
 To make a new variant — same body, different goal — copy the folder and edit `character.md` and `seed_experience.md`.
 
+## Visualizing sessions
+
+Every `spine` run writes a session log to `creatures/<x>/logs/<session_id>/` — every accumulated message, every reflection (with the full LLM prompt and response), every instinct/experience version. The `trace` command opens a session in the browser:
+
+```
+trace creatures/keep_changing                       # latest session in that creature
+trace creatures/keep_changing/logs/20260507_114404  # a specific session
+trace creatures/keep_changing --rebake              # force-rebake trace.json
+```
+
+It bakes a `trace.json` next to the session log (cached on subsequent runs), starts a local HTTP server on `127.0.0.1:8765` rooted at the repo, and opens the tracer in your default browser.
+
+The view has two panes:
+
+- **Horizontal timeline** (top, D3 SVG) — two lanes, `instinct` and `soul`. Each reflection cycle shows as a faint polyline walking through the instinct messages that triggered it and dropping down to the resulting intent. Scroll to zoom, drag to pan, click an event for details.
+- **Vertical chat** (below, scrollable) — every event in time order. The colored gutter on the left of each row identifies which reflection batch the event belongs to: messages and the intent that consumed them share a gutter color. Cycles through 4 muted colors so adjacent batches always differ.
+
+Event kinds: `instinct` (device → spine messages), `soul` (the reflection's intent), `operator` (text typed into the spine's TUI), `failed` (a reflection that errored), plus `crash` and `mem` snapshots when present.
+
+For headless or scripted use, `bake-trace <session_path>` produces the `trace.json` without starting a server.
+
 ## System Architecture
 
 ### Overview

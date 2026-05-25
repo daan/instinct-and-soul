@@ -20,6 +20,8 @@ spine = "instinct_and_soul.spine:main"
 tune = "instinct_and_soul.tune:main"
 flash = "instinct_and_soul.flash:main"
 check-llm = "instinct_and_soul.check_llm:main"
+bake-trace = "instinct_and_soul.tracelib.cli:main"
+trace = "instinct_and_soul.tracelib.serve:main"
 
 [build-system]
 requires = ["uv_build>=0.8.11,<0.9.0"]
