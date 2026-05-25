@@ -124,7 +124,7 @@ class VersionStore:
         with open(path, "w") as f:
             json.dump({
                 "session_id": self.session_id,
-                "ts": int(time.time()),
+                "ts": time.time(),
                 "resumed_from": resumed_from,
                 "llm": llm_info,
                 "system_prompt": system_prompt,
@@ -187,7 +187,7 @@ class VersionStore:
     def save_operator_command(self, text):
         path = os.path.join(self.base, "operator.log")
         with open(path, "a") as f:
-            f.write("{}\t{}\n".format(int(time.time()), text))
+            f.write("{}\t{}\n".format(time.time(), text))
         return path
 
 
@@ -261,8 +261,8 @@ class SpineApp(App):
         self.reflecting = False
         self.session_usage = {
             "llm": self.llm_info,
-            "started_at": int(time.time()),
-            "updated_at": int(time.time()),
+            "started_at": time.time(),
+            "updated_at": time.time(),
             "reflections": 0,
             "input_tokens_total": 0,
             "cache_read_input_tokens_total": 0,
@@ -296,7 +296,7 @@ class SpineApp(App):
         self.store.save_operator_command(text)
         self.log_msg(tagged, style="bold cyan")
         self.messages_since_last.append({
-            "ts": int(time.time()),
+            "ts": time.time(),
             "content": tagged,
         })
         if not self.reflecting:
@@ -405,7 +405,7 @@ class SpineApp(App):
                 else:
                     self.log_msg(msg)
                     self.messages_since_last.append({
-                        "ts": int(time.time()),
+                        "ts": time.time(),
                         "content": msg,
                     })
                     if not self.reflecting:
@@ -466,7 +466,7 @@ class SpineApp(App):
             cost_inc = compute_cost(self.model, usage)
             if cost_inc is not None:
                 self.session_usage["cost_total"] += cost_inc
-            self.session_usage["updated_at"] = int(time.time())
+            self.session_usage["updated_at"] = time.time()
             self.store.save_usage(self.session_usage)
 
             # log per-reflection summary
@@ -501,7 +501,7 @@ class SpineApp(App):
             seq = self.store.next_seq()
             reflection = {
                 "seq": seq,
-                "ts": int(time.time()),
+                "ts": time.time(),
                 "messages_since_last": messages,
                 "instinct_version_in": self.instinct_version,
                 "crashed": crashed,
