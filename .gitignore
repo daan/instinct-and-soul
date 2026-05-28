@@ -4,6 +4,11 @@ __pycache__/
 
 # Per-creature session logs — contain interaction data + Claude reflections.
 creatures/*/logs/
+sim_creatures/*/logs/
+
+# Simulator inputs (mocap-derived .npz, synthetic test data) — not under git.
+# Keep small test fixtures in tests/ if needed.
+sim_in/
 
 # Network profiles — contain WiFi credentials. Only example.toml is checked in.
 .config/networks/*.toml

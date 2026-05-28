@@ -74,29 +74,57 @@ class Trace:
                     payload={"content": content, "ref_seq": seq},
                 ))
 
+            # Messages buffered during this reflection that got dropped because
+            # the soul replaced the instinct. Emit them at their original arrival
+            # time, tagged with `dropped: true` so the tracer can fade/strike them.
+            for i, msg in enumerate(refl.get("dropped_after", [])):
+                content = msg["content"]
+                kind = "operator" if content.startswith("OPERATOR:") else "instinct-msg"
+                out.append(Event(
+                    id=f"r{seq}d{i}",
+                    t=float(msg["ts"]),
+                    kind=kind,
+                    payload={
+                        "content": content,
+                        "ref_seq": seq,
+                        "dropped": True,
+                        "dropped_by": seq,
+                    },
+                ))
+
             if refl.get("failed"):
+                fpayload = {
+                    "error": refl.get("error", ""),
+                    "ref_seq": seq,
+                }
+                if refl.get("started_at") is not None:
+                    fpayload["started_at"] = float(refl["started_at"])
+                    fpayload["latency_s"] = float(refl["ts"]) - float(refl["started_at"])
                 out.append(Event(
                     id=f"r{seq}",
                     t=float(refl["ts"]),
                     kind="failed",
-                    payload={
-                        "error": refl.get("error", ""),
-                        "ref_seq": seq,
-                    },
+                    payload=fpayload,
                 ))
             else:
+                payload = {
+                    "intent": refl.get("intent", ""),
+                    "ref_seq": seq,
+                    "instinct_changed": bool(refl.get("instinct_changed")),
+                    "experience_changed": bool(refl.get("experience_changed")),
+                    "instinct_version_out": refl.get("instinct_version_out"),
+                    "experience_version_out": refl.get("experience_version_out"),
+                }
+                if refl.get("usage"):
+                    payload["usage"] = refl["usage"]
+                if refl.get("started_at") is not None:
+                    payload["started_at"] = float(refl["started_at"])
+                    payload["latency_s"] = float(refl["ts"]) - float(refl["started_at"])
                 out.append(Event(
                     id=f"r{seq}",
                     t=float(refl["ts"]),
                     kind="intent",
-                    payload={
-                        "intent": refl.get("intent", ""),
-                        "ref_seq": seq,
-                        "instinct_changed": bool(refl.get("instinct_changed")),
-                        "experience_changed": bool(refl.get("experience_changed")),
-                        "instinct_version_out": refl.get("instinct_version_out"),
-                        "experience_version_out": refl.get("experience_version_out"),
-                    },
+                    payload=payload,
                 ))
         return out
 
@@ -124,6 +152,23 @@ class Trace:
             ))
         return out
 
+    def _versions(self) -> dict:
+        """List the instinct/experience versions with their line counts.
+        Used to plot size-over-time without forcing the frontend to do dir walks."""
+        def collect(subdir: str) -> list[dict]:
+            out = []
+            for path in sorted(glob.glob(os.path.join(self.path, subdir, "*"))):
+                with open(path) as f:
+                    lines = sum(1 for _ in f)
+                out.append({
+                    "seq": _filename_seq(path),
+                    "ts": _filename_ts(path),
+                    "lines": lines,
+                    "path": os.path.relpath(path, self.path),
+                })
+            return out
+        return {"instinct": collect("instinct"), "experience": collect("experience")}
+
     def to_dict(self) -> dict:
         return {
             "session_id": self.session_id,
@@ -131,4 +176,5 @@ class Trace:
             "meta": {k: v for k, v in self.meta.items()
                      if k not in ("system_prompt",)},  # heavy; fetched on demand
             "events": [asdict(e) for e in self.events()],
+            "versions": self._versions(),
         }

@@ -29,7 +29,8 @@ PLACEHOLDER = (
     "wiggle <leg> [amp] | calibrate [amp] | trot [amp] [ms] [duty%] | "
     "back [amp] [ms] [duty%] | rotate <cw|ccw> [seconds] | "
     "rotate180 <cw|ccw> [degrees] | circle <cw|ccw> [amp] [ms] | "
-    "walk [amp] [ms] [duty%] | pronk [amp] [ms] [duty%] | wave [leg] | imulog | miclog"
+    "walk [amp] [ms] [duty%] | pronk [amp] [ms] [duty%] | wave [leg] | "
+    "tone [freq] [ms] | toflog | theremin [min_mm] [max_mm] | imulog | miclog"
 )
 
 
@@ -138,6 +139,22 @@ class PuppyCTuner(TuneAppBase):
                 leg = clamp_leg(parts[1]) if len(parts) > 1 else 0
                 code = format_recipe(RECIPES["wave"], leg=leg)
                 self.log_msg("wave leg={}".format(leg), style="cyan")
+
+            elif cmd == "tone":
+                freq = max(50, min(8000, int(parts[1]))) if len(parts) > 1 else 440
+                ms = max(50, min(5000, int(parts[2]))) if len(parts) > 2 else 500
+                code = format_recipe(RECIPES["tone"], freq=freq, ms=ms)
+                self.log_msg("tone {}Hz {}ms".format(freq, ms), style="cyan")
+
+            elif cmd == "toflog":
+                code = format_recipe(RECIPES["toflog"])
+                self.log_msg("toflog: streaming distance", style="cyan")
+
+            elif cmd == "theremin":
+                min_mm = max(10, min(2000, int(parts[1]))) if len(parts) > 1 else 30
+                max_mm = max(min_mm + 10, min(2000, int(parts[2]))) if len(parts) > 2 else 600
+                code = format_recipe(RECIPES["theremin"], min_mm=min_mm, max_mm=max_mm)
+                self.log_msg("theremin {}..{} mm".format(min_mm, max_mm), style="cyan")
 
             elif cmd == "imulog":
                 code = format_recipe(RECIPES["imulog"])

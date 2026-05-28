@@ -1,20 +1,18 @@
 """
-main.py — M5StickS3 + PuppyC HAT runtime.
+main.py — M5StickS3 pebble runtime.
 
-Boots M5 hardware, brings up WiFi, opens a WebSocket to the spine, and
-hot-swaps instinct coroutines without rebooting. Forked from sticks3/main.py;
-key differences:
+Boots M5 hardware, brings up WiFi (AP or STA), opens a WebSocket to
+the spine, and runs an asyncio loop with three tasks:
+  1. Heartbeat: M5.update() tick + periodic HEARTBEAT to spine
+  2. WebSocket listener: receives instinct code and hot-swaps it
+  3. Instinct: the soul's async def run() coroutine
 
-  - GPIO0 is I²C SCL to the PuppyC HAT, NOT a vibration motor. The sticks3
-    PWM cleanup on GPIO0 is removed.
-  - A SoftI2C bus to the hat is established at boot and exposed to instincts
-    as `i2c_hat`.
-  - Per-leg trim (direction + offset) lives here, in the runtime, so soul-
-    generated instincts cannot accidentally invert the calibration.
-  - `set_leg`, `set_all`, `center_all`, FL/FR/BL/BR are pre-imported into
-    instinct scope. Instincts should use these instead of writing raw I²C.
-  - On session cleanup, all legs are centred (rather than the sticks3 vibe
-    motor being killed).
+Incoming WS messages are treated as instinct code to exec.
+The code must define an async def run() coroutine.
+
+Runtime provides to instinct code:
+  send(msg), asyncio, Pin, I2C, PWM, time, struct, math,
+  M5, Imu, Speaker, Widgets
 """
 
 import M5
@@ -22,8 +20,18 @@ from M5 import *
 import time
 
 M5.begin()
+# Note: do NOT call Speaker.begin() here — the amp idles audibly.
+# Tone/chirp instincts must call Speaker.begin() + setVolume themselves
+# and Speaker.end() when done.
+
+# Make sure GPIO0 PWM (vibration motor) isn't carrying over from a prior run.
+from machine import Pin, PWM
+_p = PWM(Pin(0), freq=1000, duty=0)
+_p.deinit()
+Pin(0, Pin.OUT, value=0)
 
 # Bail-out: hold BtnA during the first 3s after boot to drop to REPL.
+# Lets us recover when main.py would otherwise grab the asyncio loop.
 Widgets.fillScreen(0x000000)
 Widgets.Label("hold BtnA for REPL", 5, 10, 1.0, 0xFFFFFF, 0x000000, Widgets.FONTS.DejaVu18)
 for _ in range(30):
@@ -42,85 +50,11 @@ import ubinascii
 import uos
 import struct
 import math
-from machine import Pin, I2C, PWM, SoftI2C
+from machine import Pin, I2C, PWM
 
-# ── PuppyC bus + helpers ────────────────────────────────────────────────────
-
-PUPPYC_ADDR = 0x38
-FL, FR, BL, BR = 0, 1, 2, 3
-CENTER = 90
-
-# Per-leg trim: (direction, offset). direction +1 normal, -1 flipped.
-# Calibrated so set_leg(leg, target>90) swings the leg toward the nose.
-TRIM = {
-    FL: (-1, 0),
-    FR: (+1, 0),
-    BL: (-1, 0),
-    BR: (+1, 0),
-}
-
-i2c_hat = SoftI2C(scl=Pin(0), sda=Pin(8), freq=100000)
-
-
-def _write_servo(channel, angle):
-    angle = max(0, min(180, int(angle)))
-    try:
-        i2c_hat.writeto_mem(PUPPYC_ADDR, channel, bytes([angle]))
-    except Exception as e:
-        print("puppyc: i2c write error ch={} ang={} err={}".format(channel, angle, e))
-
-
-def set_leg(leg, target):
-    direction, offset = TRIM[leg]
-    _write_servo(leg, CENTER + direction * (target - CENTER) + offset)
-
-
-def set_all(fl, fr, bl, br):
-    set_leg(FL, fl)
-    set_leg(FR, fr)
-    set_leg(BL, bl)
-    set_leg(BR, br)
-
-
-def center_all():
-    set_all(CENTER, CENTER, CENTER, CENTER)
-
-
-# Centre the legs early — covers power-on hold + post-flash junk.
-center_all()
-
-# ── ToF (VL53L0X on hardware I²C bus 1, Grove pins) ────────────────────────
-
-# UIFlow firmware doesn't put /flash/lib on sys.path by default. Our flashed
-# creature drivers land there (creatures/puppyc/lib/*.py → /lib/ via mpremote,
-# which is /flash/lib/ at runtime), so we insert it manually before importing.
-import sys as _sys
-if "/flash/lib" not in _sys.path:
-    _sys.path.insert(0, "/flash/lib")
-
-try:
-    from vl53l0x_nb import VL53L0X
-    _tof_i2c = I2C(1, sda=Pin(9), scl=Pin(10), freq=400000)
-    _tof = VL53L0X(_tof_i2c, io_timeout_s=1)
-    print("tof: VL53L0X ready on I2C(1) sda=9 scl=10")
-except Exception as e:
-    _tof = None
-    print("tof: init failed:", e)
-
-
-def read_distance_mm():
-    """Latest ToF reading in millimetres, or None if the sensor isn't available.
-    Typical range ~30 (very close) to ~2000 (out of range). 0 from the sensor
-    means "no echo / blocked"; we pass that through as 0."""
-    if _tof is None:
-        return None
-    try:
-        return _tof.range
-    except Exception:
-        return None
-
-
-# ── Config ─────────────────────────────────────────────────────────────────
+# ── Config ──────────────────────────────────────────────────────────────────
+# Prefer wifi.py if flashed alongside main.py; otherwise use defaults below.
+# SPINE_HOST_* is the laptop's IP (manual on AP, static on STA).
 
 try:
     import wifi as _w
@@ -132,13 +66,13 @@ try:
     CONFIG_SOURCE = "wifi.py"
 except ImportError:
     MODE = "sta"
-    AP_SSID, AP_PASS, AP_CHANNEL = "puppy", "puppy123", 6
+    AP_SSID, AP_PASS, AP_CHANNEL = "pebble", "pebble123", 6
     STA_SSID, STA_PASS = "Lee", "coffeepot"
-    SPINE_HOST_AP, SPINE_HOST_STA = "192.168.4.2", "10.0.0.2"
+    SPINE_HOST_AP, SPINE_HOST_STA = "192.168.4.2", "10.0.0.4"
     SPINE_PORT = 8765
     CONFIG_SOURCE = "defaults"
 
-HEARTBEAT_INTERVAL = 5
+HEARTBEAT_INTERVAL = 5  # seconds
 
 # ── Display helper ─────────────────────────────────────────────────────────
 
@@ -149,7 +83,7 @@ def show(lines):
         Widgets.Label(line, 5, y, 1.0, 0xFFFFFF, 0x000000, Widgets.FONTS.DejaVu18)
         y += 24
 
-# ── WiFi ───────────────────────────────────────────────────────────────────
+# ── WiFi ────────────────────────────────────────────────────────────────────
 
 def start_ap(ssid, password, channel=6, timeout_s=5):
     ap = network.WLAN(network.AP_IF)
@@ -185,7 +119,7 @@ def connect_sta(ssid, password, timeout_s=10):
     print("sta: connected, ip =", ip)
     return ip
 
-# ── Minimal WebSocket client ───────────────────────────────────────────────
+# ── Minimal WebSocket client (text frames, no TLS) ─────────────────────────
 
 class WebSocket:
     def __init__(self, sock):
@@ -298,7 +232,6 @@ INSTINCT_ENV = {
     "Pin": Pin,
     "I2C": I2C,
     "PWM": PWM,
-    "SoftI2C": SoftI2C,
     "time": time,
     "struct": struct,
     "math": math,
@@ -306,23 +239,10 @@ INSTINCT_ENV = {
     "Imu": Imu,
     "Speaker": Speaker,
     "Widgets": Widgets,
-    # puppyc body API
-    "i2c_hat": i2c_hat,
-    "set_leg": set_leg,
-    "set_all": set_all,
-    "center_all": center_all,
-    "FL": FL,
-    "FR": FR,
-    "BL": BL,
-    "BR": BR,
-    "PUPPYC_ADDR": PUPPYC_ADDR,
-    # ToF sensor (None until first successful init; returns None on failure)
-    "read_distance_mm": read_distance_mm,
 }
 
 DEFAULT_INSTINCT = """
 async def run():
-    center_all()
     while True:
         send("state=idle")
         await asyncio.sleep(5)
@@ -356,8 +276,6 @@ async def swap_instinct(code):
             await current_task
         except asyncio.CancelledError:
             pass
-    # Always start a fresh instinct from a known leg pose.
-    center_all()
     current_task = asyncio.create_task(run_instinct(code))
     print("instinct: swapped ({} bytes)".format(len(code)))
 
@@ -365,6 +283,8 @@ async def swap_instinct(code):
 last_session_id = None
 
 async def session_start_cleanup():
+    """Called when spine reports a new session. Stop the running instinct
+    and reset visible/audible hardware so the next swap_instinct starts clean."""
     global current_task
     if current_task:
         current_task.cancel()
@@ -374,7 +294,9 @@ async def session_start_cleanup():
             pass
         current_task = None
     Widgets.fillScreen(0x000000)
-    center_all()
+    _p = PWM(Pin(0), freq=1000, duty=0)
+    _p.deinit()
+    Pin(0, Pin.OUT, value=0)
     try:
         Speaker.end()
     except Exception:
@@ -430,7 +352,7 @@ async def main():
         await asyncio.sleep(3)
 
 
-# ── Entry point ────────────────────────────────────────────────────────────
+# ── Entry point ─────────────────────────────────────────────────────────────
 
 if MODE == "ap":
     SPINE_HOST = SPINE_HOST_AP

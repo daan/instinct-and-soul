@@ -2,13 +2,17 @@
 flash.py — copy MicroPython source onto a USB-attached board.
 
 Usage:
-    flash creatures/cores3                   # full install: main.py + wifi.py
+    flash creatures/cores3                   # full install: main.py + wifi.py + lib/
     flash creatures/cores3 --wifi guest      # full install, override wifi profile
-    flash creatures/cores3 --no-wifi         # main.py only
+    flash creatures/cores3 --no-wifi         # main.py + lib/ only
     flash creatures/cores3 --port /dev/ttyACM0
     flash wifi                               # wifi.py only, from config.toml
     flash wifi guest                         # wifi.py only, from named profile
     flash list-wifi                          # list .config/networks/*.toml profiles
+
+When <creature>/lib/ exists, every .py/.mpy file under it is copied to /lib/
+on the device, preserving subdirectories. MicroPython's default sys.path
+includes /lib, so imports from main.py and instinct.py work without setup.
 
 Wifi resolution (used by both `flash creatures/...` and `flash wifi`):
     1. CLI --wifi NAME / positional NAME → .config/networks/<NAME>.toml
@@ -170,6 +174,49 @@ _NO_WIFI_HINT = (
 )
 
 
+# ── lib/ flashing ──────────────────────────────────────────────────────────
+
+def _collect_lib_files(lib_dir):
+    """Return [(local_path, remote_path), ...] for every .py/.mpy under lib_dir.
+
+    Subdirectories are preserved. Non-Python files are skipped (the convention
+    is 'device-side Python only' — pack assets into the firmware some other way
+    if you need them).
+
+    Remote paths use no leading slash (e.g. 'lib/vl53l0x.py'). mpremote 1.27's
+    `mkdir :/lib` silently no-ops but `mkdir :lib` works; use the working form.
+    """
+    out = []
+    for root, _, names in os.walk(lib_dir):
+        for n in sorted(names):
+            if not n.endswith((".py", ".mpy")):
+                continue
+            local = os.path.join(root, n)
+            rel = os.path.relpath(local, lib_dir).replace(os.sep, "/")
+            out.append((local, "lib/" + rel))
+    return out
+
+
+def _ensure_remote_dirs(port, files):
+    """mkdir every unique parent directory on the device.
+
+    Ignores "File exists" (mpremote exits 1 in that case but the desired state
+    is already reached). Surfaces other failures as warnings so we don't fail
+    silently if e.g. the device went away.
+    """
+    dirs = sorted({os.path.dirname(remote) for _, remote in files})
+    for d in dirs:
+        result = subprocess.run(
+            ["mpremote", "connect", port, "mkdir", ":" + d],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            combined = (result.stderr + result.stdout).lower()
+            if "exists" not in combined:
+                print("flash: warning: mkdir :{} failed: {}".format(
+                    d, (result.stderr + result.stdout).strip()))
+
+
 # ── Subcommands ────────────────────────────────────────────────────────────
 
 def flash_creature(args):
@@ -209,11 +256,28 @@ def flash_creature(args):
     print("flash: main from {}".format(main_py))
     print("flash: -> {}".format(port))
 
+    # Optional device-side library files: <creature>/lib/*.py go to /lib/ on
+    # the device, preserving subdirectories. MicroPython has /lib on sys.path
+    # by default so `import vl53l0x` works from main.py and instinct.py alike.
+    lib_dir = os.path.join(args.creature_path, "lib")
+    lib_files = _collect_lib_files(lib_dir) if os.path.isdir(lib_dir) else []
+    if lib_files:
+        print("flash: lib from {} ({} files)".format(lib_dir, len(lib_files)))
+
     try:
         cmds = []
         if wifi_action == "write":
             cmds.append((["mpremote", "connect", port, "cp", wifi_tmp, ":wifi.py"], "copied wifi.py"))
         cmds.append((["mpremote", "connect", port, "cp", main_py, ":main.py"], "copied main.py"))
+
+        if lib_files:
+            _ensure_remote_dirs(port, lib_files)
+            for local, remote in lib_files:
+                cmds.append(
+                    (["mpremote", "connect", port, "cp", local, ":" + remote],
+                     "copied {} -> {}".format(os.path.relpath(local), remote))
+                )
+
         cmds.append((["mpremote", "connect", port, "reset"], "reset"))
         for cmd, msg in cmds:
             result = subprocess.run(cmd)

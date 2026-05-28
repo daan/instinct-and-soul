@@ -232,6 +232,78 @@ async def run():
         await asyncio.sleep_ms(100)
 """,
     },
+    "tone": {
+        # Play one tone for ms milliseconds. Hardware verification for the
+        # speaker — does NOT touch servos or ToF.
+        "args": [("freq", int, 440), ("ms", int, 500)],
+        "code": """
+async def run():
+    Speaker.begin()
+    Speaker.setVolume(64)
+    send("tone freq={freq} ms={ms}")
+    steps = max(1, {ms} // 50)
+    for _ in range(steps):
+        Speaker.tone({freq}, 80)
+        M5.update()
+        await asyncio.sleep_ms(50)
+    Speaker.end()
+    send("tone done")
+    while True:
+        await asyncio.sleep(1)
+""",
+    },
+    "toflog": {
+        # Stream VL53L0X distance readings. Hardware verification for the ToF
+        # — does NOT touch servos or speaker.
+        "args": [],
+        "code": """
+async def run():
+    if read_distance_mm() is None:
+        send("toflog: sensor not available (check VL53L0X wiring)")
+        while True:
+            await asyncio.sleep(5)
+    send("toflog: streaming distance")
+    while True:
+        d = read_distance_mm()
+        send("tof distance={} mm".format(d if d is not None else "?"))
+        await asyncio.sleep_ms(100)
+""",
+    },
+    "theremin": {
+        # Combined hardware test: ToF distance modulates speaker pitch.
+        # Closer = higher pitch. Silent when out of range. No servo motion.
+        # If all three subsystems (sound, ToF, instinct loop) work, you'll
+        # hear pitch follow your hand smoothly.
+        "args": [("min_mm", int, 30), ("max_mm", int, 600)],
+        "code": """
+async def run():
+    if read_distance_mm() is None:
+        send("theremin: ToF not available")
+        while True:
+            await asyncio.sleep(5)
+    MIN_MM = {min_mm}
+    MAX_MM = {max_mm}
+    MIN_HZ = 200
+    MAX_HZ = 1500
+    Speaker.begin()
+    Speaker.setVolume(64)
+    send("theremin {min_mm}..{max_mm}mm -> 200..1500Hz")
+    try:
+        while True:
+            d = read_distance_mm()
+            if d is None or d <= 0 or d > MAX_MM:
+                await asyncio.sleep_ms(40)
+                continue
+            d_clamped = max(MIN_MM, min(MAX_MM, d))
+            frac = 1.0 - (d_clamped - MIN_MM) / (MAX_MM - MIN_MM)
+            freq = int(MIN_HZ + frac * (MAX_HZ - MIN_HZ))
+            Speaker.tone(freq, 80)
+            M5.update()
+            await asyncio.sleep_ms(40)
+    finally:
+        Speaker.end()
+""",
+    },
     "miclog": {
         # Stream peak + RMS amplitude of the PDM mic in short windows.
         # Tune thresholds for clap / voice detection, then commit a value

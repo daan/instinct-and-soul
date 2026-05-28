@@ -56,6 +56,8 @@ spine creatures/touchy-pebble
 
 To make a new variant — same body, different goal — copy the folder and edit `character.md` and `seed_experience.md`.
 
+If a creature needs device-side Python libraries (e.g. a sensor driver like `vl53l0x.py`), drop them into `creatures/<name>/lib/`. `flash` copies everything under `lib/` to `/lib/` on the device, preserving subdirectories — MicroPython has `/lib` on `sys.path` by default, so `import vl53l0x` works from both `main.py` and `instinct.py`. Host-side files (`tune.py`, `test_*.py`, `recipes.py`) stay outside `lib/` and remain on the laptop.
+
 ## Visualizing sessions
 
 Every `spine` run writes a session log to `creatures/<x>/logs/<session_id>/` — every accumulated message, every reflection (with the full LLM prompt and response), every instinct/experience version. The `trace` command opens a session in the browser:

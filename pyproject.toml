@@ -13,6 +13,8 @@ dependencies = [
     "serial-device",
     "textual>=8.0.2",
     "websockets>=16.0",
+    "numpy>=2.0",
+    "soundfile>=0.12",
 ]
 
 [project.scripts]
@@ -22,6 +24,9 @@ flash = "instinct_and_soul.flash:main"
 check-llm = "instinct_and_soul.check_llm:main"
 bake-trace = "instinct_and_soul.tracelib.cli:main"
 trace = "instinct_and_soul.tracelib.serve:main"
+creature-sim = "instinct_and_soul.creature_sim.cli:main"
+bake-audio = "instinct_and_soul.creature_sim.bake_audio:main"
+sim-spine = "instinct_and_soul.sim_spine:main"
 
 [build-system]
 requires = ["uv_build>=0.8.11,<0.9.0"]

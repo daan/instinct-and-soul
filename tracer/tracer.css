@@ -47,7 +47,7 @@ h1 {
 svg {
   display: block;
   width: 100%;
-  height: 180px;
+  height: 320px;
 }
 .zoom-surface { fill: transparent; cursor: grab; }
 .zoom-surface:active { cursor: grabbing; }
@@ -71,6 +71,8 @@ svg {
 .event.crash        path   { fill: #911; }
 .event.mem          circle { fill: #999; }
 .event.intent.changed circle { stroke: #222; stroke-width: 2; }
+/* Dropped event dots: smaller and faded, no polyline attaches to them. */
+.event.dropped circle { opacity: 0.35; }
 
 .playhead {
   stroke: #c33;
@@ -94,6 +96,28 @@ svg {
   fill: #888;
   font-size: 10px;
   font-family: ui-monospace, monospace;
+  pointer-events: none;
+}
+.lane-divider {
+  stroke: #eee;
+  stroke-width: 1;
+}
+.token-bar {
+  fill: #74a;
+  fill-opacity: 0.5;
+}
+.latency-bar       { fill: #888; fill-opacity: 0.6; }
+.latency-bar.failed { fill: #c33; fill-opacity: 0.8; }
+.size-line {
+  fill: none;
+  stroke-width: 1.5;
+}
+.size-line.instinct   { stroke: #4a7; }
+.size-line.experience { stroke: #74a; }
+.empty-lane-note {
+  fill: #bbb;
+  font-size: 10px;
+  font-style: italic;
   pointer-events: none;
 }
 
@@ -159,6 +183,11 @@ svg {
   color: #333;
   line-height: 1.45;
 }
+/* Dropped messages: arrived during a reflection that replaced the instinct,
+   so the next reflection never saw them. Render faded and struck-through. */
+.chat-row.dropped { opacity: 0.45; }
+.chat-row.dropped .chat-content { text-decoration: line-through; }
+.chat-row.dropped .chat-kind::after { content: " · dropped"; opacity: 0.7; }
 .chat-flags {
   display: flex;
   gap: 6px;

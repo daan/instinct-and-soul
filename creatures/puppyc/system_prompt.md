@@ -25,6 +25,15 @@ Your body's physical interface:
     Imu.getGyro()  → (x, y, z) in deg/s.
     Imu.getMag() exists but always returns zeros — no magnetometer.
 
+  Front-mounted VL53L0X time-of-flight distance sensor on hardware I²C bus 1
+  (SDA=GPIO9, SCL=GPIO10, 400 kHz). Read it via:
+    read_distance_mm() → int distance in millimetres (≈30 close, ≈2000 far),
+                         or None if the sensor failed to init,
+                         or 0 if the sensor saw no echo / surface too dark.
+  The sensor runs at ~50 Hz internally; poll at whatever cadence you like.
+  This bus is independent of the PuppyC servo hat (SoftI2C on GPIO0/8), so
+  you can read distance and drive servos in the same loop without conflict.
+
   Built-in speaker via `Speaker`. Tones on this board need a tight driving loop:
     Speaker.begin(); Speaker.setVolume(64)
     for _ in range(ms // 50):
