@@ -71,7 +71,7 @@ def main():
     n = bake_if_needed(session_dir, args.rebake)
 
     rel = os.path.relpath(session_dir, repo_root)
-    url = f"http://localhost:{args.port}/tracer/?trace={quote(rel)}"
+    url = f"http://localhost:{args.port}/viewers/tracer/?trace={quote(rel)}"
 
     os.chdir(repo_root)
     # ThreadingHTTPServer + allow_reuse so consecutive runs don't hit "address in use".

@@ -74,11 +74,25 @@ def main():
     print(f"duration: {duration_ms/1000.0:.2f}s", file=sys.stderr)
     print(f"output:   {output}", file=sys.stderr)
 
+    # Nominal sample rate of the driving stream (exact source fps for mocap).
+    fps = (round((len(imu_source.t_ms) - 1) / (imu_source.duration_ms / 1000.0), 3)
+           if imu_source.duration_ms > 0 else None)
+    meta = {
+        "kind": "sim",
+        "creature": args.code_path,
+        "instinct": os.path.relpath(instinct_path),
+        "source": args.from_mocap or imu_path,
+        "wrist": args.wrist if args.from_mocap else None,
+        "fps": fps,
+        "params": {},
+    }
+
     summary = run_sim(
         instinct_code=instinct_code,
         imu_source=imu_source,
         duration_ms=duration_ms,
         output_dir=output,
+        meta=meta,
     )
 
     print(f"--- summary ---", file=sys.stderr)

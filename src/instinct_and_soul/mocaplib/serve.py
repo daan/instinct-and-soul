@@ -56,7 +56,7 @@ def main() -> int:
         raise SystemExit(f"{json_path} is outside the repo ({root})")
 
     data_url = "/" + quote(str(rel))
-    view_url = f"http://127.0.0.1:{args.port}/skeleton/index.html?data={quote(data_url)}"
+    view_url = f"http://127.0.0.1:{args.port}/viewers/skeleton/index.html?data={quote(data_url)}"
 
     class Handler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *a, **kw):

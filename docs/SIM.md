@@ -27,7 +27,7 @@ real device must produce a trace in the *same format* the simulator does.
 ## The pipeline
 
 ```
-  AMASS .npz                                          ┌─ skeleton/ viewer (3D body + IMU charts)
+  AMASS .npz                                          ┌─ viewers/skeleton/ (3D body + IMU charts)
   (mocap)                                             │
      │  bake-mocap                                    │
      ▼                                                │
@@ -47,7 +47,7 @@ Two halves, now in one repo:
 
 | Half | Lives in | Role |
 |---|---|---|
-| **Data factory** | `src/instinct_and_soul/mocaplib/` + `skeleton/` | mocap → skeleton + synthetic IMU JSON; 3D viewer ✅ |
+| **Data factory** | `src/instinct_and_soul/mocaplib/` + `viewers/skeleton/` | mocap → skeleton + synthetic IMU JSON; 3D viewer ✅ |
 | **Harness** | `src/instinct_and_soul/creature_sim/`, `sim_spine.py` | run instinct in fake-M5 CPython, capture behavior ✅ |
 
 The boundary between them is **one file format**: the IMU stream. Get that right
@@ -184,8 +184,8 @@ Three views, all driven from a session (or the mocap JSON):
 
 | View | Tool | Shows |
 |---|---|---|
-| the body | `skeleton/` (three.js) ✅ | mocap skeleton + IMU charts (the *input*) |
-| the behavior | `tracer/` (`trace`) ✅ | instinct messages / soul intent timeline |
+| the body | `viewers/skeleton/` (three.js) ✅ | mocap skeleton + IMU charts (the *input*) |
+| the behavior | `viewers/tracer/` (`trace`) ✅ | instinct messages / soul intent timeline |
 | the sound | `bake-audio` ✅ | `audio_events.jsonl` → WAV |
 
 The M2 comparison view is these on one clock: the **skeleton dancing** beside the
@@ -203,6 +203,6 @@ each other. ☐
 | ✅ | `bake-audio`, `trace` | done |
 | ✅ | bridge: `bake-imu` (mocap JSON → IMU jsonl, `--wrist` default left); `creature-sim --from-mocap` | done |
 | ✅ | sim reads the jsonl stream (`JsonlImuSource`); `--imu` takes `.npz` or `.jsonl` | done |
-| ☐ | session layout: write `meta.json`; settle `imu_reads.jsonl` as the IMU record | next |
+| ✅ | session layout: `creature-sim` writes `meta.json`; `imu_reads.jsonl` is the IMU record | done |
 | ☐ | real recorder: `main.py` tee-wrappers → session dir | M2 |
 | ☐ | comparison view: body + audio + display on one clock | M2 |

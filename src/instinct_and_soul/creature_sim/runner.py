@@ -1,5 +1,6 @@
 """Drive an instinct.py coroutine under the virtual clock."""
 import asyncio
+import datetime
 import json
 import math
 import os
@@ -68,8 +69,14 @@ def run_sim(
     imu_source: NpzImuSource,
     duration_ms: float,
     output_dir: str,
+    meta: Optional[dict] = None,
 ) -> dict:
     """Run instinct.py code in the simulator. Writes captured events to output_dir.
+
+    Writes a self-contained session directory (see docs/SIM.md, Decision 3):
+      meta.json, input/imu_reads.jsonl, output/*.jsonl, comms/sent.jsonl.
+    `meta` supplies provenance (creature, source clip, wrist, …); the runner adds
+    the runtime-derived duration and timestamp.
 
     Returns a small summary dict (final virtual ms, event counts, output paths).
     """
@@ -128,6 +135,15 @@ def run_sim(
         imu.close()
         speaker.close()
         m5.close()
+
+    # Session provenance: caller-supplied context + runtime-derived fields.
+    meta_out = dict(meta or {})
+    meta_out.setdefault("kind", "sim")
+    meta_out["duration_ms"] = clock.now_ms
+    meta_out["created"] = (datetime.datetime.now(datetime.timezone.utc)
+                           .isoformat(timespec="seconds").replace("+00:00", "Z"))
+    with open(os.path.join(output_dir, "meta.json"), "w") as f:
+        json.dump(meta_out, f, indent=2)
 
     # Count events for the summary
     def _count(path):
