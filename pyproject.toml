@@ -26,7 +26,10 @@ bake-trace = "instinct_and_soul.tracelib.cli:main"
 trace = "instinct_and_soul.tracelib.serve:main"
 creature-sim = "instinct_and_soul.creature_sim.cli:main"
 bake-audio = "instinct_and_soul.creature_sim.bake_audio:main"
+bake-imu = "instinct_and_soul.creature_sim.bridge:main"
 sim-spine = "instinct_and_soul.sim_spine:main"
+bake-mocap = "instinct_and_soul.mocaplib.extract:main"
+skeleton = "instinct_and_soul.mocaplib.serve:main"
 
 [build-system]
 requires = ["uv_build>=0.8.11,<0.9.0"]

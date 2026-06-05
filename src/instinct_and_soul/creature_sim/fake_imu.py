@@ -1,31 +1,38 @@
-"""Fake Imu module: linear-interp samples from an .npz, log every read."""
+"""Fake Imu module: serve interpolated IMU samples by time, log every read.
+
+The simulator drives an instinct against a fixed IMU stream. A source holds the
+stream as three arrays — t_ms (N,), accel (N,3) in g, gyro (N,3) in deg/s — and
+interpolates them by virtual time. Streams come from:
+  - NpzImuSource    — an .npz with t_ms/accel/gyro
+  - JsonlImuSource  — a jsonl with {t, ax..az, gx..gz} per line (the contract;
+                      same schema the sim writes as imu_reads.jsonl)
+See docs/SIM.md for why jsonl is the interchange format.
+"""
 import json
 import os
 import numpy as np
 
 
-class NpzImuSource:
-    """Hold an IMU stream from imu.npz and serve interpolated values by time.
+class _ArrayImuSource:
+    """Hold an IMU stream as arrays and serve interpolated values by time.
 
-    Expected arrays:
-      t_ms:  shape (N,)        — virtual ms, monotonic, 0-based
-      accel: shape (N, 3)      — g, sensor-frame
-      gyro:  shape (N, 3)      — deg/s, sensor-frame
+    t_ms:  (N,)    virtual ms, monotonic
+    accel: (N, 3)  g, sensor-frame
+    gyro:  (N, 3)  deg/s, sensor-frame
     """
 
-    def __init__(self, path: str):
-        z = np.load(path)
-        self.t_ms = np.asarray(z["t_ms"], dtype=np.float64)
-        self.accel = np.asarray(z["accel"], dtype=np.float64)
-        self.gyro  = np.asarray(z["gyro"],  dtype=np.float64)
+    def __init__(self, t_ms, accel, gyro):
+        self.t_ms = np.asarray(t_ms, dtype=np.float64)
+        self.accel = np.asarray(accel, dtype=np.float64)
+        self.gyro = np.asarray(gyro, dtype=np.float64)
         if self.t_ms.ndim != 1 or len(self.t_ms) < 2:
-            raise ValueError("imu.npz needs t_ms with at least 2 samples")
+            raise ValueError("IMU source needs t_ms with at least 2 samples")
         if self.accel.shape != (len(self.t_ms), 3):
             raise ValueError(f"accel shape {self.accel.shape} doesn't match t_ms")
         if self.gyro.shape != (len(self.t_ms), 3):
             raise ValueError(f"gyro shape {self.gyro.shape} doesn't match t_ms")
-        # Monotonic-read cursor: bisect would be fine too, but reads in the
-        # sim are monotonic in virtual time, so incrementing is O(1).
+        # Monotonic-read cursor: reads in the sim are monotonic in virtual time,
+        # so incrementing is O(1).
         self._cursor = 0
 
     @property
@@ -42,7 +49,7 @@ class NpzImuSource:
         n = len(self.t_ms)
         while i + 1 < n and self.t_ms[i + 1] <= t:
             i += 1
-        # Allow backwards lookup too — bisect handles it, but cheaper to drop back
+        # Allow backwards lookup too — cheaper to drop back than bisect.
         while i > 0 and self.t_ms[i] > t:
             i -= 1
         self._cursor = i
@@ -68,10 +75,46 @@ class NpzImuSource:
         return self._interp(t_ms, self.gyro)
 
 
+class NpzImuSource(_ArrayImuSource):
+    """IMU stream from an imu.npz with t_ms, accel, gyro arrays."""
+
+    def __init__(self, path: str):
+        z = np.load(path)
+        super().__init__(z["t_ms"], z["accel"], z["gyro"])
+
+
+class JsonlImuSource(_ArrayImuSource):
+    """IMU stream from a jsonl with {t, ax, ay, az, gx, gy, gz} per line."""
+
+    def __init__(self, path: str):
+        ts, acc, gyro = [], [], []
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                d = json.loads(line)
+                ts.append(d["t"])
+                acc.append((d["ax"], d["ay"], d["az"]))
+                gyro.append((d["gx"], d["gy"], d["gz"]))
+        if not ts:
+            raise ValueError(f"no IMU samples in {path}")
+        super().__init__(ts, acc, gyro)
+
+
+def load_imu_source(path: str) -> _ArrayImuSource:
+    """Pick a source by extension: .npz → Npz, .jsonl → Jsonl."""
+    if path.endswith(".npz"):
+        return NpzImuSource(path)
+    if path.endswith(".jsonl"):
+        return JsonlImuSource(path)
+    raise ValueError(f"unsupported IMU file (want .npz or .jsonl): {path}")
+
+
 class _CapturingImu:
     """Module-level Imu replacement. Reads from the source, logs each access."""
 
-    def __init__(self, source: NpzImuSource, clock, log_path: str):
+    def __init__(self, source, clock, log_path: str):
         self._source = source
         self._clock = clock
         os.makedirs(os.path.dirname(log_path), exist_ok=True)

@@ -3,7 +3,8 @@ import argparse
 import os
 import sys
 
-from .fake_imu import NpzImuSource
+from .bridge import bake
+from .fake_imu import load_imu_source
 from .runner import run_sim
 
 
@@ -23,8 +24,14 @@ def main():
     p = argparse.ArgumentParser(description="Run a creature's instinct.py in a fake M5 environment.")
     p.add_argument("code_path",
                    help="A creature directory (uses seed_instinct.py) or a specific .py file.")
-    p.add_argument("--imu", required=True,
-                   help="Path to imu.npz with t_ms, accel, gyro arrays.")
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--imu",
+                     help="Path to an IMU stream: .npz (t_ms/accel/gyro) or .jsonl.")
+    src.add_argument("--from-mocap", metavar="CLIP",
+                     help="A baked mocap clip JSON (bake-mocap output); bridged to an "
+                          "IMU stream on the fly under sim_in/.")
+    p.add_argument("--wrist", default="left", choices=("left", "right"),
+                   help="Wrist to extract when using --from-mocap (default: left).")
     p.add_argument("--duration", type=float, default=None,
                    help="Simulated duration in seconds. Defaults to IMU source length. "
                         "Cannot exceed IMU source length.")
@@ -33,7 +40,16 @@ def main():
     args = p.parse_args()
 
     instinct_path = _resolve_instinct_path(args.code_path)
-    imu_source = NpzImuSource(args.imu)
+
+    if args.from_mocap:
+        if not os.path.isfile(args.from_mocap):
+            raise SystemExit(f"mocap clip not found: {args.from_mocap}")
+        imu_path = bake(args.from_mocap, args.wrist)
+        print(f"bridged {os.path.basename(args.from_mocap)} ({args.wrist} wrist) "
+              f"→ {imu_path}", file=sys.stderr)
+    else:
+        imu_path = args.imu
+    imu_source = load_imu_source(imu_path)
 
     source_s = imu_source.duration_ms / 1000.0
     if args.duration is None:
@@ -54,7 +70,7 @@ def main():
         instinct_code = f.read()
 
     print(f"instinct: {instinct_path}", file=sys.stderr)
-    print(f"imu:      {args.imu}  ({source_s:.2f}s, {len(imu_source.t_ms)} samples)", file=sys.stderr)
+    print(f"imu:      {imu_path}  ({source_s:.2f}s, {len(imu_source.t_ms)} samples)", file=sys.stderr)
     print(f"duration: {duration_ms/1000.0:.2f}s", file=sys.stderr)
     print(f"output:   {output}", file=sys.stderr)
 

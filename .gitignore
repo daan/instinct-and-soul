@@ -10,6 +10,10 @@ sim_creatures/*/logs/
 # Keep small test fixtures in tests/ if needed.
 sim_in/
 
+# Mocap source + baked output (AMASS-licensed raw .npz, large generated JSON).
+# The pipeline lives in src/instinct_and_soul/mocaplib; the data does not ship.
+data/mocap/
+
 # Network profiles — contain WiFi credentials. Only example.toml is checked in.
 .config/networks/*.toml
 !.config/networks/example.toml

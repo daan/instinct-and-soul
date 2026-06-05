@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>mocap — skeleton + IMU viewer</title>
+  <style>
+    :root { color-scheme: dark; --bg:#111; --panel:#1a1a1a; --line:#2a2a2a;
+            --fg:#ddd; --muted:#888; --left:#f4a261; --right:#2a9d8f;
+            --ax-x:#e76f51; --ax-y:#3ecf8e; --ax-z:#4ea8ff; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+                 font: 13px/1.4 -apple-system, system-ui, sans-serif; }
+    #app { display: flex; flex-direction: column; height: 100vh; }
+    #canvas-wrap { flex: 1 1 auto; position: relative; min-height: 0; }
+    canvas { display: block; }
+    #hud, #legend { position: absolute; top: 8px;
+                    background: rgba(0,0,0,0.5); padding: 6px 10px; border-radius: 4px;
+                    font-variant-numeric: tabular-nums; pointer-events: none; }
+    #hud { left: 8px; }
+    #legend { right: 8px; }
+    .sw { display: inline-block; width: 10px; height: 10px; margin-right: 4px;
+          vertical-align: -1px; border-radius: 2px; }
+    #chart-tabs { display: flex; align-items: center; gap: 8px;
+                  padding: 4px 12px; background: var(--panel);
+                  border-top: 1px solid var(--line); }
+    #chart-tabs button { background: transparent; color: var(--muted); border: none;
+                         padding: 4px 10px; border-radius: 3px; cursor: pointer;
+                         font: inherit; }
+    #chart-tabs button:hover { color: var(--fg); }
+    #chart-tabs button.active { background: var(--line); color: var(--fg); }
+    #chart-legend { margin-left: auto; color: var(--muted);
+                    font-variant-numeric: tabular-nums; }
+    #charts { flex: 0 0 320px; background: var(--panel); display: block; cursor: crosshair; }
+    #controls { flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+                padding: 8px 14px; background: var(--panel); border-top: 1px solid var(--line); }
+    #controls button { background: var(--line); color: var(--fg); border: 1px solid #3a3a3a;
+                       padding: 4px 10px; border-radius: 3px; cursor: pointer; font: inherit; }
+    #controls button:hover { background: #3a3a3a; }
+    #frame-label { font-variant-numeric: tabular-nums; color: var(--muted); }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://esm.sh/three@0.160.0",
+      "three/addons/": "https://esm.sh/three@0.160.0/examples/jsm/",
+      "d3": "https://esm.sh/d3@7"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="app">
+    <div id="canvas-wrap">
+      <div id="hud">loading…</div>
+      <div id="legend">
+        <span class="sw" style="background:var(--left)"></span>left wrist&nbsp;&nbsp;
+        <span class="sw" style="background:var(--right)"></span>right wrist
+      </div>
+    </div>
+    <div id="chart-tabs">
+      <button data-view="kinematics" class="active">Kinematics</button>
+      <button data-view="imu">IMU</button>
+      <span id="chart-legend"></span>
+    </div>
+    <svg id="charts"></svg>
+    <div id="controls">
+      <button id="play">▶</button>
+      <span id="frame-label">0 / 0</span>
+      <span style="flex:1"></span>
+      <span style="color:var(--muted)">space: play/pause &nbsp;·&nbsp; wheel: zoom &nbsp;·&nbsp; shift+drag: pan &nbsp;·&nbsp; drag: scrub &nbsp;·&nbsp; dbl-click: reset</span>
+    </div>
+  </div>
+  <script type="module" src="./skeleton.js"></script>
+  <script type="module" src="./charts.js"></script>
+</body>
+</html>

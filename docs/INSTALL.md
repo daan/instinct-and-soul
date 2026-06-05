@@ -71,7 +71,7 @@ Update the WiFi/spine config section near the top of `creatures/touchy-pebble/ma
 
 ## UIFlow boards (CORES3, sticks3)
 
-Flash the M5Stack UIFlow MicroPython firmware using the [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/intro). Edit "boot.py" to directly run main.py. Instructions are in boot.py comments. I use [Thonny](https://thonny.org/) for convienience.
+Flash the M5Stack UIFlow MicroPython firmware using the [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/intro). In the m5burner menu there is an option to boot directly into main, or edit "boot.py" later (Instructions are in boot.py comments. I use [Thonny](https://thonny.org/) for convienience.)
 
 UIFlow runs `boot.py` then `main.py`, so we just upload `main.py`:
 

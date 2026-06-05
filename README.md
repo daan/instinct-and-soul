@@ -20,7 +20,7 @@ source .venv/bin/activate
 ```
 edit [.config/networks/example.toml](.config/networks/example.toml) with your network specifics
 
-attach your device (e.g. m5cores3) you might need to [edit boot.py](INSTALL.md#uiflow-boards-cores3-sticks3) 
+attach your device (e.g. m5cores3) you might need to [edit boot.py](docs/INSTALL.md#uiflow-boards-cores3-sticks3) 
 
 ```
 flash creatures/cores3 --wifi lee 
@@ -40,7 +40,7 @@ To use a different model or API (OpenAI-compatible endpoints like OpenRouter, Ol
 spine creatures/cores3 --llm openrouter
 ```
 
-Start with the [installation guide](INSTALL.md) for detailed instructions.
+Start with the [installation guide](docs/INSTALL.md) for detailed instructions.
 
 Each runnable thing is a **creature**: a folder under `creatures/` that bundles a body (MicroPython runtime + hardware description) with a character (desire + initial personality + initial instinct code). Two creatures are included:
 
