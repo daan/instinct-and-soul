@@ -1,0 +1,17 @@
+# Google Gemini profile (native google-genai SDK). Copy to gemini.toml and fill
+# in api_key. Select with `spine --llm gemini` / `sim-spine --llm gemini`.
+#
+# Get a key from Google AI Studio (https://aistudio.google.com/apikey).
+# api_key may be omitted here if GEMINI_API_KEY (or GOOGLE_API_KEY) is set in the env.
+
+api     = "google"
+model   = "gemini-2.5-flash"     # or gemini-2.5-pro, gemini-2.5-flash-lite, gemini-2.0-flash
+api_key = "AIza..."
+
+# ── Fine control (all optional) ──────────────────────────────────────────────
+# thinking_budget: tokens the model may spend "thinking" before replying.
+#   0  = off (fastest/cheapest)   -1 = dynamic (model decides)   N = hard cap
+# Omit to use the model default. 2.5 models think by default (billed as output).
+# thinking_budget   = 0
+# temperature       = 1.0
+# max_output_tokens = 16384        # headroom for thinking + the full instinct rewrite

@@ -69,7 +69,7 @@ WIFI_PY_TEMPLATE = (
 )
 
 _REQUIRED_COMMON = ["mode", "ssid", "pass", "spine_host"]
-_REQUIRED_AP_EXTRA = ["channel"]
+_REQUIRED_AP_EXTRA = []  # `channel` defaults to 6 if omitted (mid-band, usually clear)
 
 # Old prefixed keys, kept around only so we can emit a useful migration error.
 _LEGACY_KEYS = {
@@ -148,7 +148,7 @@ def render_wifi_py(cfg, source):
     else:
         flat["ap_ssid"] = cfg["ssid"]
         flat["ap_pass"] = cfg["pass"]
-        flat["ap_channel"] = cfg["channel"]
+        flat["ap_channel"] = cfg.get("channel", 6)
         flat["spine_host_ap"] = cfg["spine_host"]
     return WIFI_PY_TEMPLATE.format(source=source, **flat)
 

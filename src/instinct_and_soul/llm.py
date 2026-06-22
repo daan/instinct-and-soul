@@ -2,10 +2,13 @@
 llm.py — LLM client abstraction + config loader for the spine.
 
 Public surface:
-    LLMClient                         — abstract base class
-    AnthropicClient, OpenAIClient     — concrete implementations
+    LLMClient                                  — abstract base class
+    AnthropicClient, OpenAIClient, GeminiClient — concrete implementations
     MODEL_PRICES, compute_cost(model, usage)
     load_llm(name=None) -> (client, info)
+
+Providers (config `api =`): "anthropic", "openai" (incl. OpenAI-compatible
+endpoints via base_url: OpenRouter, Ollama, …), and "google" (native Gemini).
 
 Config resolution (spine startup):
     1. CLI --llm NAME             → .config/llm/<NAME>.toml
@@ -18,6 +21,7 @@ Config files searched in this order:
     2. ~/.config/instinct-and-soul/<rel>
 """
 
+import os
 from abc import ABC, abstractmethod
 
 import anthropic
@@ -36,6 +40,13 @@ MODEL_PRICES = {
     "claude-sonnet-4-6":         (3.00, 15.00),
     "claude-opus-4-7":           (15.00, 75.00),
     "claude-haiku-4-5-20251001": (0.80,  4.00),
+    # Google Gemini — verify against current Google pricing. Note compute_cost's
+    # cache multiplier (0.1×) is Anthropic-tuned; Gemini implicit caching is ≈0.25×,
+    # so cached cost is slightly under-counted (fine for a rough tracker).
+    "gemini-2.5-flash":          (0.30,  2.50),
+    "gemini-2.5-pro":            (1.25, 10.00),
+    "gemini-2.5-flash-lite":     (0.10,  0.40),
+    "gemini-2.0-flash":          (0.10,  0.40),
 }
 
 
@@ -138,6 +149,81 @@ class OpenAIClient(LLMClient):
         }
 
 
+# Harm categories relaxed for Gemini — the reflection prompt is creative/embodied
+# and must not be silently blocked or truncated by default safety filters.
+_GEMINI_HARM_CATEGORIES = (
+    "HARM_CATEGORY_HARASSMENT",
+    "HARM_CATEGORY_HATE_SPEECH",
+    "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+    "HARM_CATEGORY_DANGEROUS_CONTENT",
+    "HARM_CATEGORY_CIVIC_INTEGRITY",
+)
+
+
+class GeminiClient(LLMClient):
+    """Native Google Gemini via the google-genai SDK. Exposes fine control:
+    thinking_budget (0=off, -1=dynamic, N=cap), temperature, max_output_tokens."""
+
+    api = "google"
+
+    def __init__(self, model, api_key=None, thinking_budget=None,
+                 temperature=None, max_output_tokens=16384):
+        from google import genai  # lazy: only imported when Gemini is selected
+        api_key = (api_key or os.environ.get("GEMINI_API_KEY")
+                   or os.environ.get("GOOGLE_API_KEY"))
+        self.model = model
+        self.client = genai.Client(api_key=api_key)
+        self.thinking_budget = thinking_budget
+        self.temperature = temperature
+        self.max_output_tokens = max_output_tokens
+
+    async def call(self, system_prompt, user_message):
+        from google.genai import types
+        cfg = {
+            "system_instruction": system_prompt,
+            "max_output_tokens": self.max_output_tokens,
+            "safety_settings": [
+                types.SafetySetting(category=c, threshold="BLOCK_NONE")
+                for c in _GEMINI_HARM_CATEGORIES
+            ],
+        }
+        if self.temperature is not None:
+            cfg["temperature"] = self.temperature
+        if self.thinking_budget is not None:
+            cfg["thinking_config"] = types.ThinkingConfig(thinking_budget=self.thinking_budget)
+
+        response = await self.client.aio.models.generate_content(
+            model=self.model,
+            contents=user_message,
+            config=types.GenerateContentConfig(**cfg),
+        )
+        um = response.usage_metadata
+        cached = getattr(um, "cached_content_token_count", 0) or 0
+        prompt = getattr(um, "prompt_token_count", 0) or 0
+        thoughts = getattr(um, "thoughts_token_count", 0) or 0      # billed as output
+        candidates = getattr(um, "candidates_token_count", 0) or 0
+        return {
+            "text": _gemini_text(response),
+            "usage": {
+                # Gemini's prompt_token_count includes the cached prefix; split it
+                # out so cost matches the Anthropic-style fresh/cached pricing.
+                "input_tokens": max(0, prompt - cached),
+                "cache_read_input_tokens": cached,
+                "cache_creation_input_tokens": 0,   # implicit caching: no explicit write
+                "output_tokens": candidates + thoughts,
+            },
+        }
+
+
+def _gemini_text(response) -> str:
+    # `.text` raises/warns if the response was blocked or produced no text part;
+    # degrade to "" so the spine just logs a missing intent, not a crash.
+    try:
+        return response.text or ""
+    except Exception:
+        return ""
+
+
 # ── Config loading ─────────────────────────────────────────────────────────
 
 def _client_from_dict(d):
@@ -153,6 +239,13 @@ def _client_from_dict(d):
         return AnthropicClient(model=model, api_key=api_key)
     if api == "openai":
         return OpenAIClient(model=model, api_key=api_key, base_url=base_url)
+    if api in ("google", "gemini"):
+        return GeminiClient(
+            model=model, api_key=api_key,
+            thinking_budget=d.get("thinking_budget"),
+            temperature=d.get("temperature"),
+            max_output_tokens=d.get("max_output_tokens", 16384),
+        )
     raise ValueError("unknown api: {!r}".format(api))
 
 

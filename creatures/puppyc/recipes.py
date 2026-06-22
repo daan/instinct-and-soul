@@ -82,6 +82,110 @@ async def run():
         await asyncio.sleep(1)
 """,
     },
+    "autotrim": {
+        # Per-leg touch-point search using the IMU.
+        #
+        # Step 1 — establish a belly-down reference. All four legs are folded
+        # high so the chassis rests on its belly (flat). The gravity vector
+        # in that pose IS the stick's mount-tilt offset; we subtract it from
+        # later readings so any residual tilt comes purely from leg loading.
+        #
+        # Step 2 — sweep each leg from LO to HI. The angle of maximum tilt
+        # deviation from the belly reference is the touch peak (where the
+        # foot pushes hardest into the ground = horn closest to vertical).
+        #
+        # New TRIM offset = current_offset + direction * (peak_angle - 90).
+        # Run on a flat surface.
+        "args": [],
+        "code": """
+async def run():
+    LO = 70
+    HI = 110
+    STEP = 1
+    SETTLE_MS = 200
+    SAMPLES = 4
+
+    async def measure_vec():
+        sx = sy = sz = 0.0
+        for _ in range(SAMPLES):
+            ax, ay, az = Imu.getAccel()
+            sx += ax; sy += ay; sz += az
+            await asyncio.sleep_ms(15)
+        return sx / SAMPLES, sy / SAMPLES, sz / SAMPLES
+
+    # Step 1: belly-down reference (rest pose — legs out to the sides).
+    # Body rests on its belly; IMU reading IS the stick mount tilt.
+    set_all(30, 30, 30, 30)
+    await asyncio.sleep_ms(800)
+    bx, by, bz = await measure_vec()
+    send("autotrim: belly ref ax={:.3f} ay={:.3f} az={:.3f}".format(bx, by, bz))
+
+    # Step 2: per-leg sweep with the other three legs kept at rest. The
+    # chassis stays on its belly except where the sweeping leg pushes it
+    # up. Tilt deviation from the belly reference peaks at the angle where
+    # the horn is closest to vertical (max foot extension).
+    peaks = {}
+    for leg, name in ((FL, "FL"), (FR, "FR"), (BL, "BL"), (BR, "BR")):
+        set_all(30, 30, 30, 30)
+        await asyncio.sleep_ms(400)
+        send("autotrim: sweeping " + name)
+        best_angle = 90
+        best_dev = -1.0
+        for angle in range(LO, HI + 1, STEP):
+            set_leg(leg, angle)
+            await asyncio.sleep_ms(SETTLE_MS)
+            ax, ay, az = await measure_vec()
+            dx, dy, dz = ax - bx, ay - by, az - bz
+            dev = math.sqrt(dx*dx + dy*dy + dz*dz)
+            send("autotrim {} angle={} dev={:.4f}".format(name, angle, dev))
+            if dev > best_dev:
+                best_dev = dev
+                best_angle = angle
+        peaks[name] = best_angle
+        send("autotrim {} peak_angle={} dev={:.4f}".format(name, best_angle, best_dev))
+
+    send("autotrim: new TRIM offsets:")
+    cal = {}
+    for leg, name in ((FL, "FL"), (FR, "FR"), (BL, "BL"), (BR, "BR")):
+        direction, current = TRIM[leg]
+        new_off = current + direction * (peaks[name] - 90)
+        send("    {}: ({:+d}, {:+d})  # was ({:+d}, {:+d}), peak={}".format(
+            name, direction, new_off, direction, current, peaks[name]))
+        TRIM[leg] = (direction, new_off)
+        cal[name] = new_off
+
+    center_all()
+    try:
+        import json
+        with open("/flash/calibration.json", "w") as f:
+            json.dump(cal, f)
+        send("autotrim: saved /flash/calibration.json " + str(cal))
+    except Exception as e:
+        send("autotrim: save failed: " + repr(e))
+    while True:
+        await asyncio.sleep(1)
+""",
+    },
+    "trimdump": {
+        # One-shot dump of the live TRIM dict. The servo HAT takes one byte
+        # per channel (see _write_servo in main.py), so int degrees IS the
+        # native resolution — fractional commands would be quantised away.
+        # For command 90, the written servo angle is simply 90 + offset
+        # (direction only affects non-centre commands).
+        "args": [],
+        "code": """
+async def run():
+    send("trimdump:")
+    for name, leg in (("FL", FL), ("FR", FR), ("BL", BL), ("BR", BR)):
+        direction, offset = TRIM[leg]
+        send("  {} dir={:+d} offset={:+d}  cmd=90 -> servo={}".format(
+            name, direction, offset, 90 + offset))
+    center_all()
+    send("trimdump: centered")
+    while True:
+        await asyncio.sleep(1)
+""",
+    },
     "trot": {
         "args": [("amp", int, 40), ("period", int, 500), ("duty", int, 65)],
         "code": """
@@ -254,18 +358,23 @@ async def run():
     },
     "toflog": {
         # Stream VL53L0X distance readings. Hardware verification for the ToF
-        # — does NOT touch servos or speaker.
+        # — does NOT touch servos or speaker. Uses the driver's non-blocking
+        # API: blocking .range raises OSError under concurrent asyncio/WiFi
+        # load, async polling of reading_available() does not.
         "args": [],
         "code": """
 async def run():
-    if read_distance_mm() is None:
+    if tof is None:
         send("toflog: sensor not available (check VL53L0X wiring)")
         while True:
             await asyncio.sleep(5)
     send("toflog: streaming distance")
     while True:
-        d = read_distance_mm()
-        send("tof distance={} mm".format(d if d is not None else "?"))
+        tof.start_range_request()
+        while not tof.reading_available():
+            await asyncio.sleep_ms(5)
+        d = tof.get_range_value()
+        send("tof distance={} mm".format(d))
         await asyncio.sleep_ms(100)
 """,
     },

@@ -5,11 +5,14 @@
   <title>Tracer — timeline</title>
   <link rel="stylesheet" href="tracer.css">
   <script src="https://cdn.jsdelivr.net/npm/d3@7.8.5/dist/d3.min.js"></script>
+  <script type="importmap">
+  { "imports": { "three": "https://esm.sh/three@0.160.0" } }
+  </script>
 </head>
 <body>
   <header>
     <h1 id="session-title">Loading…</h1>
-    <div class="help">Scroll to zoom · Drag to pan · Click an event for details</div>
+    <div class="help">Scroll to zoom · Drag to pan · Click an event for details · Double-click to move the playhead</div>
   </header>
 
   <div class="legend" id="legend"></div>
@@ -18,7 +21,22 @@
     <svg id="timeline"></svg>
   </div>
 
+  <div id="transport" hidden>
+    <button id="play" title="Play / pause (space)">▶</button>
+    <input type="range" id="scrub" min="0" max="1000" value="0" step="1">
+    <span class="time" id="time">0.0 / 0.0 s</span>
+  </div>
+
   <div id="chat"></div>
+
+  <!-- Inset stage: dancer + device screen + sound, shown only for sim runs. -->
+  <div id="stage" hidden>
+    <div id="stage-3d"></div>
+    <canvas id="stage-screen"></canvas>
+    <span id="stage-wrist"></span>
+    <div id="stage-vol"><div id="stage-vol-bar"></div></div>
+  </div>
+  <audio id="stage-audio" preload="auto"></audio>
 
   <script type="module" src="tracer.js"></script>
 </body>

@@ -70,6 +70,7 @@ def run_sim(
     duration_ms: float,
     output_dir: str,
     meta: Optional[dict] = None,
+    screen=(135, 240),
 ) -> dict:
     """Run instinct.py code in the simulator. Writes captured events to output_dir.
 
@@ -87,7 +88,7 @@ def run_sim(
     clock = Clock()
     imu = _CapturingImu(imu_source, clock, os.path.join(output_dir, "input", "imu_reads.jsonl"))
     speaker = _CapturingSpeaker(clock, os.path.join(output_dir, "output", "audio_events.jsonl"))
-    m5 = _M5(clock, os.path.join(output_dir, "output", "display_log.jsonl"))
+    m5 = _M5(clock, os.path.join(output_dir, "output", "display_log.jsonl"), screen=screen)
 
     sent_path = os.path.join(output_dir, "comms", "sent.jsonl")
     sent_log = open(sent_path, "w")

@@ -4,10 +4,16 @@ import os
 
 
 class _CapturingDisplay:
-    def __init__(self, clock, log_path: str):
+    def __init__(self, clock, log_path: str, width: int = 135, height: int = 240):
         self._clock = clock
+        self._w = int(width)
+        self._h = int(height)
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         self._log = open(log_path, "w")
+
+    # Real M5.Display exposes these; instincts size their layout from them.
+    def width(self):  return self._w
+    def height(self): return self._h
 
     def _emit(self, payload: dict) -> None:
         payload["t"] = self._clock.now_ms
@@ -43,8 +49,9 @@ class _StubPower:
 class _M5:
     """Module-like namespace gathering Display, BtnA, BtnB, Power, update()."""
 
-    def __init__(self, clock, display_log_path: str):
-        self.Display = _CapturingDisplay(clock, display_log_path)
+    def __init__(self, clock, display_log_path: str, screen=(135, 240)):
+        self.Display = _CapturingDisplay(clock, display_log_path,
+                                         width=screen[0], height=screen[1])
         self.BtnA  = _StubButton()
         self.BtnB  = _StubButton()
         self.Power = _StubPower()

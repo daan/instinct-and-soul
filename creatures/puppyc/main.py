@@ -52,12 +52,29 @@ CENTER = 90
 
 # Per-leg trim: (direction, offset). direction +1 normal, -1 flipped.
 # Calibrated so set_leg(leg, target>90) swings the leg toward the nose.
+# Direction is a wiring fact and stays in source. Offsets are per-puppy
+# physical calibration and are overlaid from /flash/calibration.json (written
+# by the autotrim recipe).
 TRIM = {
     FL: (-1, 0),
     FR: (+1, 0),
     BL: (-1, 0),
     BR: (+1, 0),
 }
+
+try:
+    import json as _json
+    with open("/flash/calibration.json") as _f:
+        _cal = _json.load(_f)
+    for _name, _leg in (("FL", FL), ("FR", FR), ("BL", BL), ("BR", BR)):
+        if _name in _cal:
+            _dir, _ = TRIM[_leg]
+            TRIM[_leg] = (_dir, int(_cal[_name]))
+    print("calibration: loaded", _cal)
+except OSError:
+    print("calibration: no calibration.json (using defaults)")
+except Exception as _e:
+    print("calibration: load failed:", _e)
 
 i2c_hat = SoftI2C(scl=Pin(0), sda=Pin(8), freq=100000)
 
@@ -89,7 +106,11 @@ def center_all():
 # Centre the legs early — covers power-on hold + post-flash junk.
 center_all()
 
-# ── ToF (VL53L0X on hardware I²C bus 1, Grove pins) ────────────────────────
+# ── ToF (VL53L0X on hardware I²C bus 0, Grove pins) ────────────────────────
+# NOTE: bus 1 is reserved by the M5 internal IMU. Sharing it (e.g. I2C(1) on
+# Grove pins 9/10) lets ToF init and the first read succeed, but Imu.getAccel()
+# leaves the peripheral in a state that makes the next ToF transaction raise
+# OSError(261,). Keep ToF on bus 0.
 
 # UIFlow firmware doesn't put /flash/lib on sys.path by default. Our flashed
 # creature drivers land there (creatures/puppyc/lib/*.py → /lib/ via mpremote,
@@ -100,9 +121,9 @@ if "/flash/lib" not in _sys.path:
 
 try:
     from vl53l0x_nb import VL53L0X
-    _tof_i2c = I2C(1, sda=Pin(9), scl=Pin(10), freq=400000)
+    _tof_i2c = I2C(0, sda=Pin(9), scl=Pin(10), freq=400000)
     _tof = VL53L0X(_tof_i2c, io_timeout_s=1)
-    print("tof: VL53L0X ready on I2C(1) sda=9 scl=10")
+    print("tof: VL53L0X ready on I2C(0) sda=9 scl=10")
 except Exception as e:
     _tof = None
     print("tof: init failed:", e)
@@ -316,8 +337,10 @@ INSTINCT_ENV = {
     "BL": BL,
     "BR": BR,
     "PUPPYC_ADDR": PUPPYC_ADDR,
+    "TRIM": TRIM,
     # ToF sensor (None until first successful init; returns None on failure)
     "read_distance_mm": read_distance_mm,
+    "tof": _tof,
 }
 
 DEFAULT_INSTINCT = """

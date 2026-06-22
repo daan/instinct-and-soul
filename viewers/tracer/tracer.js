@@ -1,4 +1,8 @@
 // Tracer — D3 timeline with lanes (events / tokens / sizes), chat below, click-sync between them.
+// Sim runs also get a transport (continuous playhead) and a small dancer/device/sound inset.
+
+import { createSkeleton } from "/viewers/lib/skeleton-mini.js";
+import { createDevice, volumeAt } from "/viewers/lib/device.js";
 
 const KIND_META = {
   "instinct-msg": { label: "instinct", color: "#4a7", radius: 3 },
@@ -16,15 +20,18 @@ const trace = await fetch(traceUrl).then(r => {
   return r.json();
 });
 
+// Grow the timeline (CSS) before we measure the SVG, when there's an IMU lane.
+if (trace.stage && trace.stage.imu) document.body.classList.add("has-imu");
+
 const t0 = trace.session_start;
 const events = trace.events.map(e => ({ ...e, t: e.t - t0, t_unix: e.t }));
 const versions = trace.versions || { instinct: [], experience: [] };
 versions.instinct.forEach(v => { v.t = v.ts - t0; });
 versions.experience.forEach(v => { v.t = v.ts - t0; });
 
-const sessionDuration = events.length
-  ? Math.max(...events.map(e => e.t)) + 2
-  : 60;
+const stageDurSec = trace.stage ? (trace.stage.duration_ms || 0) / 1000 : 0;
+const eventsDurSec = events.length ? Math.max(...events.map(e => e.t)) + 2 : 0;
+const sessionDuration = Math.max(eventsDurSec, stageDurSec) || 60;
 
 // ---------- Header + legend ----------
 document.getElementById("session-title").textContent =
@@ -70,14 +77,26 @@ const LAYOUT = {
   tokens:   { top: 130, bottom: 170 },
   latency:  { top: 185, bottom: 225 },
   sizes:    { top: 240, bottom: 300 },
+  accel:    { top: 318, bottom: 360 },
+  gyro:     { top: 378, bottom: 420 },
 };
+const hasImu = !!(trace.stage && trace.stage.imu);
+const TIMELINE_BOTTOM = hasImu ? LAYOUT.gyro.bottom : LAYOUT.sizes.bottom;
 const margin = { left: 70, right: 30 };  // left wider for lane labels
 
 // Faint dividers between lanes
-[LAYOUT.events.bottom + 5, LAYOUT.tokens.bottom + 5, LAYOUT.latency.bottom + 5].forEach(y => {
+const dividers = [LAYOUT.events.bottom + 5, LAYOUT.tokens.bottom + 5, LAYOUT.latency.bottom + 5];
+if (hasImu) dividers.push(LAYOUT.sizes.bottom + 5, LAYOUT.accel.bottom + 9);
+dividers.forEach(y => {
   svg.append("line").attr("class", "lane-divider")
     .attr("x1", 0).attr("x2", width).attr("y1", y).attr("y2", y);
 });
+
+// Clip lane plots to the plot area so zoomed-in lines don't spill over labels.
+svg.append("defs").append("clipPath").attr("id", "plot-clip")
+  .append("rect")
+  .attr("x", margin.left).attr("y", 0)
+  .attr("width", width - margin.right - margin.left).attr("height", height);
 
 // Lane labels (static, left side)
 function addLabel(x, y, text) {
@@ -88,6 +107,10 @@ addLabel(6, LAYOUT.events.soulY + 3,     "soul");
 addLabel(6, LAYOUT.tokens.top + 12,      "tokens");
 addLabel(6, LAYOUT.latency.top + 12,     "latency");
 addLabel(6, LAYOUT.sizes.top + 12,       "lines");
+if (hasImu) {
+  addLabel(6, (LAYOUT.accel.top + LAYOUT.accel.bottom) / 2, "accel");
+  addLabel(6, (LAYOUT.gyro.top + LAYOUT.gyro.bottom) / 2,   "gyro");
+}
 
 // Lane groups
 const axisGroup     = svg.append("g").attr("class", "axis").attr("transform", `translate(0, ${LAYOUT.axisY})`);
@@ -96,6 +119,8 @@ const eventsG       = svg.append("g").attr("class", "events");
 const tokensG       = svg.append("g").attr("class", "tokens-lane");
 const latencyG      = svg.append("g").attr("class", "latency-lane");
 const sizesG        = svg.append("g").attr("class", "sizes-lane");
+const accelG        = svg.append("g").attr("class", "imu-lane accel-lane");
+const gyroG         = svg.append("g").attr("class", "imu-lane gyro-lane");
 const playheadGroup = svg.append("g").attr("class", "playhead-group");
 
 const baseTimeScale = d3.scaleLinear()
@@ -290,6 +315,35 @@ function renderSizes(state) {
     .text(`0–${maxLines} lines`);
 }
 
+// ---------- IMU lanes (accel / gyro) ----------
+const imu = hasImu ? trace.stage.imu : null;
+const AX = ["x", "y", "z"];
+let accelSeries = [], gyroSeries = [], accelYScale = null, gyroYScale = null;
+if (imu) {
+  const series = (arr, a) => imu.ms.map((m, i) => ({ t: m / 1000, v: arr[i][a] }));
+  accelSeries = AX.map((_, a) => series(imu.acc, a));
+  gyroSeries  = AX.map((_, a) => series(imu.gyro, a));
+  const maxAbs = (rows) => Math.max(1e-6, ...rows.map(r => Math.max(Math.abs(r[0]), Math.abs(r[1]), Math.abs(r[2]))));
+  accelYScale = d3.scaleLinear().domain([-maxAbs(imu.acc), maxAbs(imu.acc)]).range([LAYOUT.accel.bottom, LAYOUT.accel.top]);
+  gyroYScale  = d3.scaleLinear().domain([-maxAbs(imu.gyro), maxAbs(imu.gyro)]).range([LAYOUT.gyro.bottom, LAYOUT.gyro.top]);
+}
+function drawBand(group, seriesByAxis, yScale, state) {
+  group.selectAll("*").remove();
+  group.append("line").attr("class", "imu-zero")
+    .attr("x1", margin.left).attr("x2", width - margin.right)
+    .attr("y1", yScale(0)).attr("y2", yScale(0));
+  const line = d3.line().x(d => state.timeScale(d.t)).y(d => yScale(d.v));
+  seriesByAxis.forEach((pts, a) => {
+    group.append("path").attr("class", `imu-line ${AX[a]}`)
+      .attr("clip-path", "url(#plot-clip)").attr("d", line(pts));
+  });
+}
+function renderImu(state) {
+  if (!imu) return;
+  drawBand(accelG, accelSeries, accelYScale, state);
+  drawBand(gyroG, gyroSeries, gyroYScale, state);
+}
+
 // ---------- Playhead ----------
 function renderPlayhead(state) {
   playheadGroup.selectAll("*").remove();
@@ -300,7 +354,7 @@ function renderPlayhead(state) {
   playheadGroup.append("line")
     .attr("class", "playhead")
     .attr("x1", x).attr("x2", x)
-    .attr("y1", LAYOUT.axisY + 5).attr("y2", LAYOUT.sizes.bottom + 5);
+    .attr("y1", LAYOUT.axisY + 5).attr("y2", TIMELINE_BOTTOM + 5);
 }
 
 
@@ -431,5 +485,103 @@ subscribe(renderEvents);
 subscribe(renderTokens);
 subscribe(renderLatency);
 subscribe(renderSizes);
+subscribe(renderImu);
 subscribe(renderPlayhead);
 subscribe(syncChatSelection);
+
+// ---------- Transport + inset stage (sim runs) ----------
+// The JS wall clock is the master; audio is slaved (it may be shorter than the
+// run). Playhead ticks update only the playhead line + inset — never the heavy
+// timeline subscribers — so playback stays smooth.
+const transportEl = document.getElementById("transport");
+const playBtn = document.getElementById("play");
+const scrubEl = document.getElementById("scrub");
+const timeEl = document.getElementById("time");
+const audioEl = document.getElementById("stage-audio");
+
+let stage = null;
+let playing = false;
+let ph = 0;                 // playhead, seconds
+let startWall = 0, startHead = 0;
+let userScrubbing = false;
+
+function setPlayhead(sec) {
+  ph = Math.max(0, Math.min(sessionDuration, sec));
+  state.playheadTime = ph;
+  renderPlayhead(state);
+  if (!userScrubbing) scrubEl.value = sessionDuration > 0 ? Math.round(ph / sessionDuration * 1000) : 0;
+  timeEl.textContent = `${ph.toFixed(1)} / ${sessionDuration.toFixed(1)} s`;
+  if (stage) stage.render(ph);
+}
+function play() {
+  if (playing) return;
+  if (ph >= sessionDuration) ph = 0;
+  playing = true;
+  startWall = performance.now(); startHead = ph;
+  playBtn.textContent = "❚❚";
+  if (audioEl.src) { audioEl.currentTime = Math.min(ph, audioEl.duration || ph); audioEl.play().catch(() => {}); }
+}
+function pause() {
+  playing = false;
+  playBtn.textContent = "▶";
+  if (audioEl.src) audioEl.pause();
+}
+function tick() {
+  if (playing) {
+    const t = startHead + (performance.now() - startWall) / 1000;
+    if (t >= sessionDuration) { setPlayhead(sessionDuration); pause(); }
+    else setPlayhead(t);
+  }
+  requestAnimationFrame(tick);
+}
+playBtn.addEventListener("click", () => (playing ? pause() : play()));
+window.addEventListener("keydown", (e) => {
+  if (e.code === "Space" && e.target.tagName !== "INPUT") { e.preventDefault(); playing ? pause() : play(); }
+});
+scrubEl.addEventListener("pointerdown", () => { userScrubbing = true; });
+scrubEl.addEventListener("pointerup", () => { userScrubbing = false; });
+scrubEl.addEventListener("input", () => {
+  if (playing) pause();
+  setPlayhead((scrubEl.value / 1000) * sessionDuration);
+  if (audioEl.src) audioEl.currentTime = Math.min(ph, audioEl.duration || ph);
+});
+
+// Double-click anywhere on the timeline to drop the playhead at that time.
+// (timeScale is the zoom-rescaled scale, so this is correct at any zoom.)
+svg.on("dblclick.zoom", null);   // disable d3-zoom's default double-click zoom
+svg.on("dblclick", (event) => {
+  const [x] = d3.pointer(event, svg.node());
+  if (playing) pause();
+  setPlayhead(state.timeScale.invert(x));
+  if (audioEl.src) audioEl.currentTime = Math.min(ph, audioEl.duration || ph);
+});
+
+async function initStage(s) {
+  document.getElementById("stage").hidden = false;
+  transportEl.hidden = false;
+  const screenEl = document.getElementById("stage-screen");
+  const dev = createDevice(screenEl, s.display_ops, s.screen);
+  screenEl.style.width = `${Math.round(64 * s.screen.w / s.screen.h)}px`;  // portrait aspect
+  let skel = null;
+  if (s.mocap) {
+    try { skel = await createSkeleton(document.getElementById("stage-3d"), `/${s.mocap}`); }
+    catch (e) { console.warn("skeleton:", e.message); }
+  }
+  const volBar = document.getElementById("stage-vol-bar");
+  document.getElementById("stage-wrist").textContent = s.wrist ? s.wrist[0].toUpperCase() : "";
+  if (s.audio) audioEl.src = `/${s.audio}`;
+  return {
+    render(sec) {
+      const ms = sec * 1000;
+      dev.render(ms);
+      if (skel) skel.setTime(sec);
+      volBar.style.width = `${Math.round(volumeAt(s.audio_events, ms) * 100)}%`;
+    },
+  };
+}
+
+if (trace.stage) {
+  stage = await initStage(trace.stage);
+  setPlayhead(0);
+}
+requestAnimationFrame(tick);

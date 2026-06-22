@@ -4,12 +4,13 @@ import json
 import os
 import sys
 
-from .trace import Trace
+from .trace import build_view
 
 
 def main():
-    p = argparse.ArgumentParser(description="Bake a spine session into trace.json.")
-    p.add_argument("session_path", help="Path to a session directory under creatures/<x>/logs/")
+    p = argparse.ArgumentParser(description="Bake any run into trace.json for the viewer.")
+    p.add_argument("session_path",
+                   help="A session dir (creatures/<x>/logs/<ts>/) or a sim run dir (sim_out/<x>/).")
     p.add_argument("-o", "--output", default=None,
                    help="Output path. Defaults to <session_path>/trace.json.")
     p.add_argument("--rebake", action="store_true",
@@ -24,14 +25,14 @@ def main():
               file=sys.stderr)
         return
 
-    trace = Trace(args.session_path)
-    data = trace.to_dict()
+    data = build_view(args.session_path)
     text = json.dumps(data, indent=2 if args.pretty else None)
 
     with open(out_path, "w") as f:
         f.write(text)
     n = len(data["events"])
-    print(f"baked {n} events from {trace.session_id} → {out_path}", file=sys.stderr)
+    stage = " + stage" if data.get("stage") else ""
+    print(f"baked {n} events from {data['session_id']}{stage} → {out_path}", file=sys.stderr)
 
 
 if __name__ == "__main__":

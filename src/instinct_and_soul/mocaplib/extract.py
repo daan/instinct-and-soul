@@ -309,7 +309,8 @@ def default_out_dir() -> Path:
     return Path(root) / "data" / "mocap" / "out" if root else Path("data/mocap/out")
 
 
-def process(npz_path: Path, out_path: Path | None = None, stride: int = 1) -> Path:
+def process(npz_path: Path, out_path: Path | None = None, stride: int = 1,
+            start: float = 0.0) -> Path:
     """Bake a mocap .npz into a skeleton+IMU JSON. Returns the output path."""
     npz_path = Path(npz_path)
     data = np.load(npz_path, allow_pickle=True)
@@ -342,12 +343,28 @@ def process(npz_path: Path, out_path: Path | None = None, stride: int = 1) -> Pa
         gmax = np.linalg.norm(imu["gyro"], axis=-1).max()
         print(f"  IMU {side:>5}: |acc|_max={amax:6.2f} g  |gyro|_max={gmax:7.1f} deg/s")
 
+    # Trim a static prefix (e.g. AMASS opens with a calibration T-pose). Slice
+    # AFTER IMU synthesis so the first kept frame keeps the accel/gyro it derived
+    # from its real neighbours — no boundary spike. The clip stays 0-based.
+    start_frame = round(start * fps)
+    if start_frame > 0:
+        if start_frame >= pos.shape[0]:
+            raise ValueError(
+                f"--start {start}s leaves no frames (clip is {pos.shape[0] / fps:.1f}s)")
+        pos = pos[start_frame:]
+        quat = quat[start_frame:]
+        imu_l = {k: v[start_frame:] for k, v in imu_l.items()}
+        imu_r = {k: v[start_frame:] for k, v in imu_r.items()}
+        print(f"  trimmed {start:.1f}s ({start_frame} frames) → {pos.shape[0]} frames "
+              f"({pos.shape[0] / fps:.1f}s)")
+
     out_path = Path(out_path) if out_path else (default_out_dir() / f"{npz_path.stem}.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     payload = {
         "fps": fps,
         "n_frames": int(pos.shape[0]),
+        "trim_start_s": start,
         "joint_names": JOINT_NAMES,
         "parents": PARENTS.tolist(),
         "bones": BONES,
@@ -376,13 +393,15 @@ def main() -> int:
                     help="Output JSON path (default: data/mocap/out/<stem>.json)")
     ap.add_argument("--stride", type=int, default=1,
                     help="Frame stride (e.g. 2 to halve framerate).")
+    ap.add_argument("--start", type=float, default=0.0, metavar="SECONDS",
+                    help="Drop the first SECONDS (e.g. an opening static T-pose).")
     args = ap.parse_args()
 
     if not args.npz.exists():
         print(f"input not found: {args.npz}", file=sys.stderr)
         return 1
     try:
-        process(args.npz, args.out, args.stride)
+        process(args.npz, args.out, args.stride, args.start)
     except ValueError as e:
         print(f"  ERROR: {e}", file=sys.stderr)
         return 2

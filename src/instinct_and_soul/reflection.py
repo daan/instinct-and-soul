@@ -14,8 +14,10 @@ import json
 import os
 import re
 import time
+import tomllib
 from typing import Awaitable, Callable, Optional
 
+from .creature_sim.devices import DEFAULT_DEVICE
 from .llm import compute_cost
 from .message_buffer import MessageBuffer
 
@@ -33,6 +35,9 @@ class Creature:
         self.seed_experience = self._read("seed_experience.md")
         self.seed_instinct = self._read("seed_instinct.py")
         self.logs_dir = os.path.join(self.path, "logs")
+        # Body: an optional creature.toml declares the device (see devices.py).
+        self.config = self._read_config()
+        self.device = self.config.get("device", DEFAULT_DEVICE)
 
     def _read(self, name):
         p = os.path.join(self.path, name)
@@ -40,6 +45,13 @@ class Creature:
             raise FileNotFoundError("missing {} in creature {}".format(name, self.path))
         with open(p) as f:
             return f.read()
+
+    def _read_config(self):
+        p = os.path.join(self.path, "creature.toml")
+        if not os.path.isfile(p):
+            return {}
+        with open(p, "rb") as f:
+            return tomllib.load(f)
 
 
 # ── XML parsing ───────────────────────────────────────────────────────────
@@ -84,7 +96,10 @@ def load_last_state(session_dir):
 class VersionStore:
     """Writes per-session artifacts (instinct, experience, reflections, etc.)."""
 
-    def __init__(self, logs_dir):
+    def __init__(self, logs_dir, now: Callable[[], float] = time.time):
+        # session_id stays wall-clock (it names the dir); _now drives the
+        # timeline timestamps so a sim can put them on its virtual axis.
+        self._now = now
         session_id = time.strftime("%Y%m%d_%H%M%S")
         self.base = os.path.join(logs_dir, session_id)
         self.session_id = session_id
@@ -98,7 +113,7 @@ class VersionStore:
         with open(path, "w") as f:
             json.dump({
                 "session_id": self.session_id,
-                "ts": time.time(),
+                "ts": self._now(),
                 "provenance": provenance,
                 "resumed_from": resumed_from,
                 "llm": llm_info,
@@ -122,19 +137,19 @@ class VersionStore:
         return self.seq
 
     def save_instinct(self, seq, code):
-        path = os.path.join(self.base, "instinct", "{:03d}_{}.py".format(seq, int(time.time())))
+        path = os.path.join(self.base, "instinct", "{:03d}_{}.py".format(seq, int(self._now())))
         with open(path, "w") as f:
             f.write(code)
         return path
 
     def save_experience(self, seq, text):
-        path = os.path.join(self.base, "experience", "{:03d}_{}.md".format(seq, int(time.time())))
+        path = os.path.join(self.base, "experience", "{:03d}_{}.md".format(seq, int(self._now())))
         with open(path, "w") as f:
             f.write(text)
         return path
 
     def save_reflection(self, seq, data):
-        path = os.path.join(self.base, "reflections", "{:03d}_{}.json".format(seq, int(time.time())))
+        path = os.path.join(self.base, "reflections", "{:03d}_{}.json".format(seq, int(self._now())))
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
         return path
@@ -146,13 +161,13 @@ class VersionStore:
         return path
 
     def save_crash(self, seq, error):
-        path = os.path.join(self.base, "crashes", "{:03d}_{}.txt".format(seq, int(time.time())))
+        path = os.path.join(self.base, "crashes", "{:03d}_{}.txt".format(seq, int(self._now())))
         with open(path, "w") as f:
             f.write(error)
         return path
 
     def save_memory(self, seq, payload):
-        path = os.path.join(self.base, "memory", "{:03d}_{}.json".format(seq, int(time.time())))
+        path = os.path.join(self.base, "memory", "{:03d}_{}.json".format(seq, int(self._now())))
         with open(path, "w") as f:
             f.write(payload)
         return path
@@ -188,11 +203,15 @@ class ReflectionLoop:
                  on_log: Optional[LogCb] = None,
                  on_intent: Optional[IntentCb] = None,
                  on_instinct_deploy: Optional[DeployCb] = None,
-                 on_status_change: Optional[StatusCb] = None):
+                 on_status_change: Optional[StatusCb] = None,
+                 now: Callable[[], float] = time.time):
         self.creature = creature
         self.llm = llm
         self.llm_info = llm_info or {}
         self.model = self.llm_info.get("model")
+        # Timeline clock. Default is wall time (real spine). The simulator injects
+        # its sim clock so reflection events land on the same axis as IMU/audio.
+        self._now = now
 
         self._on_log = on_log or (lambda msg, style=None: None)
         self._on_intent = on_intent or (lambda intent, ts: None)
@@ -216,7 +235,7 @@ class ReflectionLoop:
                     self.current_instinct = instinct
                 self.resumed_from = os.path.basename(last)
 
-        self.store = VersionStore(creature.logs_dir)
+        self.store = VersionStore(creature.logs_dir, now=now)
         self.buffer = MessageBuffer(
             drop_after_instinct_change=True,
             spare_operator=True,
@@ -272,12 +291,12 @@ class ReflectionLoop:
     # ── Inputs from host ──────────────────────────────────────────────
 
     def add_message(self, content: str) -> None:
-        self.buffer.add({"ts": time.time(), "content": content})
+        self.buffer.add({"ts": self._now(), "content": content})
 
     def add_operator(self, text: str) -> None:
         tagged = "OPERATOR: " + text
         self.store.save_operator_command(text)
-        self.buffer.add({"ts": time.time(), "content": tagged})
+        self.buffer.add({"ts": self._now(), "content": tagged})
 
     def add_crash(self, error_msg: str) -> None:
         self.last_crashed = True
@@ -295,7 +314,7 @@ class ReflectionLoop:
     async def reflect(self) -> None:
         """One reflection cycle. Caller orchestrates scheduling / re-fire."""
         self._set_reflecting(True)
-        started_at = time.time()
+        started_at = self._now()
 
         messages = self.buffer.drain()
         crashed = self.last_crashed
@@ -365,7 +384,7 @@ class ReflectionLoop:
             seq = self.store.next_seq()
             reflection = {
                 "seq": seq,
-                "ts": time.time(),
+                "ts": self._now(),
                 "started_at": started_at,
                 "messages_since_last": messages,
                 "instinct_version_in": self.instinct_version,
@@ -413,7 +432,7 @@ class ReflectionLoop:
             fseq = self.store.next_seq()
             self.store.save_reflection(fseq, {
                 "seq": fseq,
-                "ts": time.time(),
+                "ts": self._now(),
                 "started_at": started_at,
                 "messages_since_last": messages,
                 "instinct_version_in": self.instinct_version,

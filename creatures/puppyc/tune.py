@@ -30,7 +30,8 @@ PLACEHOLDER = (
     "back [amp] [ms] [duty%] | rotate <cw|ccw> [seconds] | "
     "rotate180 <cw|ccw> [degrees] | circle <cw|ccw> [amp] [ms] | "
     "walk [amp] [ms] [duty%] | pronk [amp] [ms] [duty%] | wave [leg] | "
-    "tone [freq] [ms] | toflog | theremin [min_mm] [max_mm] | imulog | miclog"
+    "tone [freq] [ms] | toflog | theremin [min_mm] [max_mm] | imulog | miclog | "
+    "autotrim | trimdump"
 )
 
 
@@ -159,6 +160,14 @@ class PuppyCTuner(TuneAppBase):
             elif cmd == "imulog":
                 code = format_recipe(RECIPES["imulog"])
                 self.log_msg("imulog: streaming IMU", style="cyan")
+
+            elif cmd == "autotrim":
+                code = format_recipe(RECIPES["autotrim"])
+                self.log_msg("autotrim: per-leg touch-point search (~40s)", style="cyan")
+
+            elif cmd == "trimdump":
+                code = format_recipe(RECIPES["trimdump"])
+                self.log_msg("trimdump: show TRIM and stand-time servo angles", style="cyan")
 
             elif cmd == "miclog":
                 rate = max(8000, min(48000, int(parts[1]))) if len(parts) > 1 else 16000

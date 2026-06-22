@@ -6,6 +6,9 @@ __pycache__/
 creatures/*/logs/
 sim_creatures/*/logs/
 
+# Simulator run output (captured sessions: imu/audio/midi/display + baked trace.json).
+sim_out/
+
 # Simulator inputs (mocap-derived .npz, synthetic test data) — not under git.
 # Keep small test fixtures in tests/ if needed.
 sim_in/
@@ -25,3 +28,6 @@ data/mocap/
 !.config/llm/example.toml
 !.config/llm/*.example.toml
 
+
+# Rendered performance videos (generated).
+data/mocap/renders/

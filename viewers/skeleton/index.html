@@ -11,7 +11,10 @@
     html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
                  font: 13px/1.4 -apple-system, system-ui, sans-serif; }
     #app { display: flex; flex-direction: column; height: 100vh; }
-    #canvas-wrap { flex: 1 1 auto; position: relative; min-height: 0; }
+    #canvas-wrap { flex: 1 1 auto; position: relative; min-height: 0; min-width: 0; overflow: hidden; }
+    /* The WebGL buffer is sized in device pixels; force the element to fit its
+       box (otherwise it shows at width×devicePixelRatio and overflows on retina). */
+    #canvas-wrap > canvas { display: block; width: 100%; height: 100%; }
     canvas { display: block; }
     #hud, #legend { position: absolute; top: 8px;
                     background: rgba(0,0,0,0.5); padding: 6px 10px; border-radius: 4px;

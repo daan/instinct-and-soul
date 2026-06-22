@@ -29,7 +29,7 @@ renderer.setPixelRatio(window.devicePixelRatio);
 canvasWrap.appendChild(renderer.domElement);
 
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0, 1, 0);
+// Orbit target is set to the motion's centroid once the skeleton is built (below).
 controls.update();
 
 scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 0.9));
@@ -86,6 +86,22 @@ const bones = new THREE.LineSegments(
   new THREE.LineBasicMaterial({ color: 0x66aaff })
 );
 root.add(bones);
+
+// Orbit around where the figure actually is: the centroid of all joints over
+// the whole clip, mapped through the root's Z-up→Y-up rotation into world space.
+// (A fixed target misses the figure once the dance translates away from origin.)
+const center = (() => {
+  let sx = 0, sy = 0, sz = 0, n = 0;
+  const step = Math.max(1, Math.floor(N / 200));   // sample frames for speed
+  for (let i = 0; i < N; i += step) {
+    const p = data.frames[i].p;
+    for (let j = 0; j < J; j++) { sx += p[j][0]; sy += p[j][1]; sz += p[j][2]; n++; }
+  }
+  return new THREE.Vector3(sx / n, sy / n, sz / n).applyEuler(root.rotation);
+})();
+controls.target.copy(center);
+camera.position.set(center.x + 2.4, center.y + 0.8, center.z + 2.4);
+controls.update();
 
 function applyFrame(i) {
   const f = data.frames[i];

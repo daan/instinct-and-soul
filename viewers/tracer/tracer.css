@@ -49,6 +49,14 @@ svg {
   width: 100%;
   height: 320px;
 }
+body.has-imu svg { height: 440px; }   /* room for the accel + gyro lanes */
+
+/* IMU lanes: x/y/z traces over the shared time axis. */
+.imu-line { fill: none; stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 0.85; }
+.imu-line.x { stroke: #e76f51; }
+.imu-line.y { stroke: #3ecf8e; }
+.imu-line.z { stroke: #4ea8ff; }
+.imu-zero { stroke: #ececec; stroke-width: 1; }
 .zoom-surface { fill: transparent; cursor: grab; }
 .zoom-surface:active { cursor: grabbing; }
 
@@ -206,3 +214,75 @@ svg {
   border-top: 1px dashed #e0e0e0;
   margin: 4px 60px 4px 0;
 }
+
+/* ---------- Transport (continuous playhead) ---------- */
+#transport {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0 10px;
+}
+#transport[hidden] { display: none; }
+#transport #play {
+  flex: none;
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  border: none;
+  background: #2a9;
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+#transport #scrub { flex: 1; accent-color: #2a9; cursor: pointer; }
+#transport .time {
+  flex: none;
+  font: 11px ui-monospace, Menlo, monospace;
+  color: #888;
+  min-width: 92px;
+  text-align: right;
+}
+
+/* ---------- Inset stage: dancer + device + sound (top-right) ---------- */
+#stage {
+  position: fixed;
+  top: 12px; right: 12px;
+  width: 220px; height: 168px;
+  background: #14161a;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+  overflow: hidden;
+  z-index: 10;
+}
+#stage[hidden] { display: none; }
+#stage-3d { position: absolute; inset: 0; }
+#stage-3d canvas { display: block; width: 100%; height: 100%; }
+/* The device screen is a small HUD overlay in the corner, true panel aspect. */
+#stage-screen {
+  position: absolute;
+  top: 6px; right: 6px;
+  height: 64px;            /* width follows the buffer's portrait aspect */
+  image-rendering: pixelated;
+  background: #000;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 2px;
+}
+#stage-wrist {
+  position: absolute;
+  top: 6px; left: 6px;
+  font: 10px ui-monospace, monospace;
+  color: #cdd;
+  background: rgba(0,0,0,0.4);
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+#stage-vol {
+  position: absolute;
+  left: 6px; right: 6px; bottom: 6px;
+  height: 4px;
+  background: rgba(255,255,255,0.12);
+  border-radius: 2px;
+  overflow: hidden;
+}
+#stage-vol-bar { height: 100%; width: 0%; background: #2a9; }
+#stage-audio { display: none; }

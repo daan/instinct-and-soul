@@ -20,8 +20,8 @@ spine_host = "10.0.0.2"
 # Access-point mode: device creates this WiFi, laptop joins it.
 # ssid       = "creature-ap"
 # pass       = "changeme123"
-# channel    = 6
 # spine_host = "192.168.4.2"
+# channel    = 6      # optional, defaults to 6 (mid-band, usually clear)
 
 # Optional: override the spine WebSocket port (default 8765).
 # spine_port = 8765

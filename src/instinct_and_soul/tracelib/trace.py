@@ -178,3 +178,156 @@ class Trace:
             "events": [asdict(e) for e in self.events()],
             "versions": self._versions(),
         }
+
+
+# ── Unified view: one trace.json for any run, with an optional sim "stage" ──
+# A run is either a spine/sim-spine *session* (has session.json + reflections)
+# or a no-LLM creature-sim run (sim_out/<name>/, just meta.json + I/O jsonl).
+# Both reduce to the same shape; the `stage` block carries what the viewer's
+# small dancer/device/sound inset needs, with sim I/O kept in sim-ms.
+
+def _repo_root(start: str) -> str:
+    p = os.path.abspath(start)
+    while p != "/":
+        if os.path.exists(os.path.join(p, "pyproject.toml")):
+            return p
+        p = os.path.dirname(p)
+    return os.path.abspath(start)
+
+
+def _read_jsonl(path: str) -> list:
+    if not os.path.isfile(path):
+        return []
+    out = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                out.append(json.loads(line))
+    return out
+
+
+_IMU_CAP = 2500  # max points per channel kept in trace.json (decimated)
+
+
+def _decimate(rows: list, cap: int = _IMU_CAP) -> list:
+    if len(rows) <= cap:
+        return rows
+    stride = (len(rows) + cap - 1) // cap
+    return rows[::stride]
+
+
+def _build_imu(run_dir: str, repo_root: str, mocap_rel, wrist, duration_ms) -> dict | None:
+    """Dense wrist IMU from the mocap clip (preferred), else the instinct's reads.
+    Columnar + decimated so it stays small in trace.json."""
+    wrist = wrist or "left"
+    # Preferred: synthetic IMU baked into the mocap clip (true wrist signal).
+    if mocap_rel:
+        path = os.path.join(repo_root, mocap_rel)
+        if os.path.isfile(path):
+            with open(path) as f:
+                clip = json.load(f)
+            imu = (clip.get("imu") or {}).get(wrist)
+            fps = clip.get("fps") or 1.0
+            if imu and imu.get("acc") and imu.get("gyro"):
+                acc, gyro = imu["acc"], imu["gyro"]
+                n = min(len(acc), len(gyro))
+                rows = []
+                for i in range(n):
+                    ms = i / fps * 1000.0
+                    if duration_ms and ms > duration_ms:
+                        break
+                    rows.append((ms, acc[i], gyro[i]))
+                rows = _decimate(rows)
+                if rows:
+                    return {
+                        "ms": [round(r[0], 1) for r in rows],
+                        "acc": [[round(v, 4) for v in r[1]] for r in rows],
+                        "gyro": [[round(v, 3) for v in r[2]] for r in rows],
+                    }
+    # Fallback: what the instinct actually sampled.
+    reads = _read_jsonl(os.path.join(run_dir, "input", "imu_reads.jsonl"))
+    reads = _decimate(reads)
+    if reads:
+        return {
+            "ms": [r.get("t", 0) for r in reads],
+            "acc": [[r.get("ax", 0), r.get("ay", 0), r.get("az", 0)] for r in reads],
+            "gyro": [[r.get("gx", 0), r.get("gy", 0), r.get("gz", 0)] for r in reads],
+        }
+    return None
+
+
+def _build_stage(run_dir: str, repo_root: str) -> dict | None:
+    """Assemble the inset 'stage' from a run's sim I/O, or None if there is none."""
+    disp_path = os.path.join(run_dir, "output", "display_log.jsonl")
+    aud_path = os.path.join(run_dir, "output", "audio_events.jsonl")
+    if not (os.path.isfile(disp_path) or os.path.isfile(aud_path)):
+        return None
+
+    # Either a creature-sim meta.json or a sim-spine sim_meta.json (or both).
+    meta = {}
+    for name in ("meta.json", "sim_meta.json"):
+        p = os.path.join(run_dir, name)
+        if os.path.isfile(p):
+            with open(p) as f:
+                meta.update(json.load(f))
+
+    display_ops = _read_jsonl(disp_path)
+    audio_events = _read_jsonl(aud_path)
+
+    # Ensure audio.wav exists (bake from events on demand), reference by path.
+    wav_rel = None
+    wav = os.path.join(run_dir, "output", "audio.wav")
+    if audio_events:
+        if not os.path.isfile(wav):
+            try:
+                from ..creature_sim.bake_audio import bake as _bake_audio
+                _bake_audio(aud_path, wav)
+            except Exception:
+                pass
+        if os.path.isfile(wav):
+            wav_rel = os.path.relpath(wav, repo_root)
+
+    ts = [o.get("t", 0) for o in display_ops] + [e.get("t", 0) for e in audio_events]
+    duration_ms = meta.get("duration_ms") or (max(ts) if ts else 0)
+
+    return {
+        "mocap": meta.get("source"),          # repo-relative path or None
+        "fps": meta.get("fps"),
+        "screen": meta.get("screen") or {"w": 135, "h": 240},
+        "wrist": meta.get("wrist"),
+        "device": meta.get("device"),
+        "display_ops": display_ops,
+        "audio_events": audio_events,
+        "audio": wav_rel,
+        "duration_ms": duration_ms,
+        "imu": _build_imu(run_dir, repo_root, meta.get("source"),
+                          meta.get("wrist"), duration_ms),
+    }
+
+
+def build_view(run_dir: str, repo_root: str | None = None) -> dict:
+    """Bake any run dir into the unified trace.json the tracer consumes."""
+    run_dir = os.path.normpath(run_dir)
+    repo_root = repo_root or _repo_root(run_dir)
+    stage = _build_stage(run_dir, repo_root)
+
+    if os.path.isfile(os.path.join(run_dir, "session.json")):
+        d = Trace(run_dir).to_dict()                 # full reflection timeline
+    else:
+        meta = {}
+        p = os.path.join(run_dir, "meta.json")
+        if os.path.isfile(p):
+            with open(p) as f:
+                meta = json.load(f)
+        d = {                                        # no-LLM probe: empty timeline
+            "session_id": os.path.basename(run_dir),
+            "session_start": 0.0,
+            "meta": meta,
+            "events": [],
+            "versions": {"instinct": [], "experience": []},
+        }
+
+    if stage:
+        d["stage"] = stage
+    return d
