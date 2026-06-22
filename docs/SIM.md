@@ -27,14 +27,16 @@ real device must produce a trace in the *same format* the simulator does.
 ## The pipeline
 
 ```
-  AMASS .npz                                          ┌─ viewers/skeleton/ (3D body + IMU charts)
-  (mocap)                                             │
-     │  bake-mocap                                    │
-     ▼                                                │
-  data/mocap/out/<clip>.json  ──────────────┬─────────┘
-  (skeleton + per-wrist IMU, g & deg/s)      │
-                                             │  bridge: pick wrist, t from fps
-                                             ▼
+  AMASS .npz  or  BVH                                 ┌─ viewers/skeleton/ (3D body + IMU charts)
+  (mocap; BVH e.g. stitched                           │      ▲ skeleton_view.json
+   loops from ../bvh-stitch)                          │      │
+     │  bake-mocap                                    │      │
+     ▼                                                │      │
+  data/mocap/<clip>/  ───────────────────────┬────────┴──────┘
+   source.bvh|.npz   (regen root)            │
+   skeleton_view.json  (viewer)              │  imu_<wrist>.jsonl (g & deg/s)
+   imu_left/right.jsonl  (sim) ──────────────┤
+   clip.json  (manifest)                     ▼
                                    imu stream (jsonl) ─► creature-sim / sim-spine ─► session/
                                              ▲                                          │
                                              │                                   trace / bake-audio
@@ -42,6 +44,20 @@ real device must produce a trace in the *same format* the simulator does.
    (same schema)                                                                        ▼
                                                                           compare: body + sound + display
 ```
+
+`bake-mocap <clip.bvh|raw.npz>` writes a self-contained **clip directory** under
+`data/mocap/<clip>/`: the input copied in as `source.*` (the regeneration root),
+the full-rate per-wrist `imu_left/right.jsonl` the simulator reads, a
+stride-decimated `skeleton_view.json` for the viewer, and a `clip.json` manifest.
+The heavy full-rate skeleton is **not** written by default — re-bake from source
+with `--full` if you need it (`bake-mocap data/mocap/<clip>/source.bvh --full`).
+
+**Source clips.** The salsa BVH captures (`Stefanos_Salsa-01_x4`,
+`Vasso_Salsa_Shines-01_x4`) come from the University of Cyprus **Dance Motion
+Capture Database** (https://dancedb.eu) — download the raw motions there — and are
+looped/stitched to ~4× their original length (the `_x4` suffix) with the
+`bvh-stitch` tool. The raw `.bvh`/`.npz` are large and licensed by their archives,
+so `data/mocap/` is gitignored; bake the clip bundles locally with `bake-mocap`.
 
 Two halves, now in one repo:
 
@@ -109,6 +125,7 @@ session/
     imu_reads.jsonl          # the IMU the instinct actually sampled  {t, ax..gz}
   output/
     audio_events.jsonl       # Speaker.tone/begin/end/setVolume/stop  {t, kind, …}
+    midi_events.jsonl        # Synth MIDI commands (note/program/CC)  {t, kind, …}
     display_log.jsonl        # M5.Display.* calls                     {t, kind, …}
   comms/
     sent.jsonl               # messages to the soul                   {t, content}
@@ -123,15 +140,15 @@ The sim samples its dense source at the same cadence and logs the same file. So
 writes it ✅.)
 
 The dense mocap stream that *drove* a sim run is **referenced, not copied** —
-`meta.json.source` names the clip. It's regenerable (deterministic bake from the
-AMASS `.npz`), so embedding it would just duplicate ~1 MB across every session in
-a sweep. `meta.json`:
+`meta.json.source` names the clip directory. It's regenerable (deterministic bake
+from the source clip), so embedding it would just duplicate data across every
+session in a sweep. `meta.json`:
 
 ```json
 {
   "kind": "sim",
   "creature": "sim_creatures/dancer",
-  "source": "data/mocap/out/Vasso_Happy_01_stageii.json",
+  "source": "data/mocap/Stefanos_Salsa-01_x4",
   "wrist": "left",
   "fps": 120.0,
   "duration_ms": 106025,
@@ -150,23 +167,24 @@ the simulator** — feed its `imu_reads.jsonl` back in as the input stream (the 
 interpolates between samples) and, if the instinct is deterministic, you get back
 the same sounds the device made live. That replay *is* the fidelity test.
 
-## Decision 4 — the mocap↔sim boundary is the bridge (now internal)
+## Decision 4 — the mocap↔sim boundary is per-wrist IMU in the clip dir ✅
 
-The factory emits a rich JSON (both wrists + skeleton, for the viewer). The
-harness wants one sensor's dense stream to interpolate. The **bridge** strips it
-down:
+The harness wants one sensor's dense stream to interpolate. Rather than strip a
+rich skeleton JSON down at sim time, `bake-mocap` **pre-writes** both wrists'
+streams into the clip directory:
 
 ```
-load data/mocap/out/<clip>.json  →  pick a wrist (default: left, configurable)
-t[i] = i / fps * 1000
-emit imu stream (jsonl)  with {t, ax..az, gx..gz}   # already g & deg/s
+data/mocap/<clip>/imu_<wrist>.jsonl    {t, ax..az, gx..gz}   # g & deg/s, t = i/fps*1000
 ```
 
-This dense stream is the sim's *input*, not a session file — it's transient and
-regenerable, so it can be a throwaway under `sim_in/` or computed on the fly.
-Now that both halves live in one repo this is an internal step, not a
-cross-archive contract — likely a `creature-sim --from-mocap <clip.json>
-[--wrist left]` path or a tiny `bake-imu` helper. ☐
+So `creature-sim <creature> --from-mocap data/mocap/<clip>/ [--wrist left]` just
+reads `imu_<wrist>.jsonl` directly — no bridging step. `--from-mocap` also accepts
+a `clip.json` or a raw `.bvh/.npz` (baked first).
+
+Because `bake-mocap` always pre-writes both wrists' full-rate streams beside the
+skeleton, there is no separate "skeleton JSON → IMU" step: the standalone
+`bake-imu` bridge was removed. `sim_in/` is no longer used for mocap-derived
+streams — it's free for external or real-replay inputs.
 
 ## The real recorder
 
@@ -201,7 +219,7 @@ each other. ☐
 | ✅ | `skeleton`: 3D viewer | done |
 | ✅ | `creature-sim` / `sim-spine`: run instinct, capture output jsonl | done |
 | ✅ | `bake-audio`, `trace` | done |
-| ✅ | bridge: `bake-imu` (mocap JSON → IMU jsonl, `--wrist` default left); `creature-sim --from-mocap` | done |
+| ✅ | `creature-sim --from-mocap <clip>` reads the clip's pre-baked `imu_<wrist>.jsonl` | done |
 | ✅ | sim reads the jsonl stream (`JsonlImuSource`); `--imu` takes `.npz` or `.jsonl` | done |
 | ✅ | session layout: `creature-sim` writes `meta.json`; `imu_reads.jsonl` is the IMU record | done |
 | ☐ | real recorder: `main.py` tee-wrappers → session dir | M2 |

@@ -14,6 +14,7 @@ from .clock import Clock
 from .fake_imu import NpzImuSource, _CapturingImu
 from .fake_speaker import _CapturingSpeaker
 from .fake_synth import _CapturingSynth
+from .fake_mem import _Mem
 from .fake_m5 import _M5
 
 
@@ -49,7 +50,7 @@ def _patch_modules(clock: Clock, duration_ms: float):
     time.sleep_ms   = lambda n: clock.advance(float(n))  # synchronous variant
 
 
-def _build_scope(*, send, imu, speaker, synth, m5):
+def _build_scope(*, send, imu, speaker, synth, mem, m5):
     return {
         "__name__":   "__instinct__",
         "__builtins__": __builtins__,
@@ -61,6 +62,7 @@ def _build_scope(*, send, imu, speaker, synth, m5):
         "Imu":        imu,
         "Speaker":    speaker,
         "Synth":      synth,
+        "Mem":        mem,
         "M5":         m5,
     }
 
@@ -91,6 +93,7 @@ def run_sim(
     imu = _CapturingImu(imu_source, clock, os.path.join(output_dir, "input", "imu_reads.jsonl"))
     speaker = _CapturingSpeaker(clock, os.path.join(output_dir, "output", "audio_events.jsonl"))
     synth = _CapturingSynth(clock, os.path.join(output_dir, "output", "midi_events.jsonl"))
+    mem = _Mem()
     m5 = _M5(clock, os.path.join(output_dir, "output", "display_log.jsonl"), screen=screen)
 
     sent_path = os.path.join(output_dir, "comms", "sent.jsonl")
@@ -101,7 +104,7 @@ def run_sim(
 
     _patch_modules(clock, duration_ms)
 
-    scope = _build_scope(send=captured_send, imu=imu, speaker=speaker, synth=synth, m5=m5)
+    scope = _build_scope(send=captured_send, imu=imu, speaker=speaker, synth=synth, mem=mem, m5=m5)
 
     try:
         exec(compile(instinct_code, "<instinct>", "exec"), scope)

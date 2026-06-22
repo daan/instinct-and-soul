@@ -217,6 +217,37 @@ def _decimate(rows: list, cap: int = _IMU_CAP) -> list:
     return rows[::stride]
 
 
+def _resolve_clip_view(source, repo_root):
+    """Map a run's meta.source to a repo-relative skeleton JSON that embeds
+    frames + per-wrist IMU. Accepts a clip directory (data/mocap/<clip>/), a
+    clip.json manifest, a skeleton JSON already (old flat layout), or a raw
+    .bvh/.npz (resolved to the clip dir bake-mocap produces). None if not found.
+    """
+    if not source:
+        return None
+    p = source if os.path.isabs(source) else os.path.join(repo_root, source)
+    if os.path.isdir(p):
+        for name in ("skeleton_view.json", "skeleton.json"):
+            cand = os.path.join(p, name)
+            if os.path.isfile(cand):
+                return os.path.relpath(cand, repo_root)
+        return None
+    if os.path.basename(p) == "clip.json" and os.path.isfile(p):
+        for name in ("skeleton_view.json", "skeleton.json"):
+            cand = os.path.join(os.path.dirname(p), name)
+            if os.path.isfile(cand):
+                return os.path.relpath(cand, repo_root)
+        return None
+    if p.endswith(".json") and os.path.isfile(p):
+        return os.path.relpath(p, repo_root)   # old flat layout: skeleton JSON itself
+    stem, ext = os.path.splitext(os.path.basename(p))
+    if ext.lower() in (".bvh", ".npz"):
+        cand = os.path.join(repo_root, "data", "mocap", stem, "skeleton_view.json")
+        if os.path.isfile(cand):
+            return os.path.relpath(cand, repo_root)
+    return None
+
+
 def _build_imu(run_dir: str, repo_root: str, mocap_rel, wrist, duration_ms) -> dict | None:
     """Dense wrist IMU from the mocap clip (preferred), else the instinct's reads.
     Columnar + decimated so it stays small in trace.json."""
@@ -257,11 +288,24 @@ def _build_imu(run_dir: str, repo_root: str, mocap_rel, wrist, duration_ms) -> d
     return None
 
 
+def _wav_stale(wav: str, src: str) -> bool:
+    """True if the rendered wav is missing or older than its source events file.
+
+    Keeps `--rebake` honest: re-running a creature rewrites the events jsonl, so
+    a wav baked from an earlier (e.g. shorter) run must be re-rendered.
+    """
+    if not os.path.isfile(wav):
+        return True
+    return os.path.isfile(src) and os.path.getmtime(wav) < os.path.getmtime(src)
+
+
 def _build_stage(run_dir: str, repo_root: str) -> dict | None:
     """Assemble the inset 'stage' from a run's sim I/O, or None if there is none."""
     disp_path = os.path.join(run_dir, "output", "display_log.jsonl")
     aud_path = os.path.join(run_dir, "output", "audio_events.jsonl")
-    if not (os.path.isfile(disp_path) or os.path.isfile(aud_path)):
+    midi_path = os.path.join(run_dir, "output", "midi_events.jsonl")
+    if not (os.path.isfile(disp_path) or os.path.isfile(aud_path)
+            or os.path.isfile(midi_path)):
         return None
 
     # Either a creature-sim meta.json or a sim-spine sim_meta.json (or both).
@@ -272,14 +316,20 @@ def _build_stage(run_dir: str, repo_root: str) -> dict | None:
             with open(p) as f:
                 meta.update(json.load(f))
 
+    # Resolve meta.source (clip dir / clip.json / raw) → the skeleton_view.json
+    # the viewer draws and _build_imu reads embedded IMU from.
+    clip_view = _resolve_clip_view(meta.get("source"), repo_root)
+
     display_ops = _read_jsonl(disp_path)
     audio_events = _read_jsonl(aud_path)
+    midi_events = _read_jsonl(midi_path)
 
-    # Ensure audio.wav exists (bake from events on demand), reference by path.
+    # Stage audio: Speaker events bake to audio.wav; a MIDI voice bakes to
+    # music.wav (needs fluidsynth). Render on demand, reference by repo path.
     wav_rel = None
-    wav = os.path.join(run_dir, "output", "audio.wav")
     if audio_events:
-        if not os.path.isfile(wav):
+        wav = os.path.join(run_dir, "output", "audio.wav")
+        if _wav_stale(wav, aud_path):
             try:
                 from ..creature_sim.bake_audio import bake as _bake_audio
                 _bake_audio(aud_path, wav)
@@ -287,21 +337,33 @@ def _build_stage(run_dir: str, repo_root: str) -> dict | None:
                 pass
         if os.path.isfile(wav):
             wav_rel = os.path.relpath(wav, repo_root)
+    elif midi_events:
+        wav = os.path.join(run_dir, "output", "music.wav")
+        if _wav_stale(wav, midi_path):
+            try:
+                from ..creature_sim.bake_midi import bake as _bake_midi
+                _bake_midi(midi_path, wav_path=wav)
+            except Exception:
+                pass
+        if os.path.isfile(wav):
+            wav_rel = os.path.relpath(wav, repo_root)
 
-    ts = [o.get("t", 0) for o in display_ops] + [e.get("t", 0) for e in audio_events]
+    ts = ([o.get("t", 0) for o in display_ops] + [e.get("t", 0) for e in audio_events]
+          + [e.get("t", 0) for e in midi_events])
     duration_ms = meta.get("duration_ms") or (max(ts) if ts else 0)
 
     return {
-        "mocap": meta.get("source"),          # repo-relative path or None
+        "mocap": clip_view,                   # repo-relative skeleton_view.json or None
         "fps": meta.get("fps"),
         "screen": meta.get("screen") or {"w": 135, "h": 240},
         "wrist": meta.get("wrist"),
         "device": meta.get("device"),
         "display_ops": display_ops,
         "audio_events": audio_events,
+        "midi_events": midi_events,
         "audio": wav_rel,
         "duration_ms": duration_ms,
-        "imu": _build_imu(run_dir, repo_root, meta.get("source"),
+        "imu": _build_imu(run_dir, repo_root, clip_view,
                           meta.get("wrist"), duration_ms),
     }
 

@@ -31,3 +31,6 @@ data/mocap/
 
 # Rendered performance videos (generated).
 data/mocap/renders/
+
+# Local MIDI soundfonts (.sf2) for bake-midi — large binaries, fetch your own.
+soundfonts/

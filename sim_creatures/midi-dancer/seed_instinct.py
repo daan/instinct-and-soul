@@ -8,18 +8,20 @@ async def run():
     # A small pentatonic-ish set so consecutive notes stay consonant.
     SCALE = [57, 60, 62, 64, 67, 69, 72, 76]
 
-    WINDOW = 30          # ~1 s of samples at the 33 ms loop
-    energies = []
+    DT = 0.033           # loop period (s)
+    WIN = 300            # ~10 s of samples kept in Mem
     last_note = None
+    n = 0
+    last_report = 0
 
     while True:
         ax, ay, az = Imu.getAccel()
         # Deviation from gravity: how much the arm accelerates beyond being held.
         energy = abs(math.sqrt(ax * ax + ay * ay + az * az) - 1.0)
 
-        energies.append(energy)
-        if len(energies) > WINDOW:
-            energies.pop(0)
+        # Persist the motion stream in Mem so it survives my reflections and I
+        # can hear the gesture's shape over time, not just this instant.
+        Mem.push("energy", round(energy, 4), maxlen=WIN)
 
         # Track: map the gesture's intensity onto pitch + velocity. Only
         # re-strike when the pitch changes, so held motion phrases rather
@@ -34,10 +36,25 @@ async def run():
         else:
             last_note = None
 
-        # Report activity for the soul's reflection (~1 s cadence).
-        if len(energies) == WINDOW:
-            mean_e = sum(energies) / WINDOW
-            send("energy mean={:.4f} now={:.4f}".format(mean_e, energy))
-            energies.clear()
+        # Every ~10 s, look back over the buffered window and report its SHAPE,
+        # not a single reading: mean/peak energy and a crude tempo (how many
+        # energy peaks per minute). Sending only here paces my reflections — the
+        # soul thinks once per window, on a time-series, instead of every tick.
+        n += 1
+        if n - last_report >= WIN:
+            last_report = n
+            buf = Mem.recent("energy")
+            if buf:
+                mean_e = sum(buf) / len(buf)
+                peak_e = max(buf)
+                # crude beat count: local maxima above the window mean
+                beats = 0
+                for i in range(1, len(buf) - 1):
+                    if buf[i] > mean_e and buf[i] >= buf[i - 1] and buf[i] > buf[i + 1]:
+                        beats += 1
+                secs = len(buf) * DT
+                bpm = beats / secs * 60.0 if secs > 0 else 0.0
+                send("window {:.0f}s mean={:.3f} peak={:.3f} peaks={} ~{:.0f}/min".format(
+                    secs, mean_e, peak_e, beats, bpm))
 
         await asyncio.sleep_ms(33)

@@ -24,6 +24,8 @@ from .creature_sim.clock import Clock
 from .creature_sim.runner import StopSimulation
 from .creature_sim.fake_imu import load_imu_source, _CapturingImu
 from .creature_sim.fake_speaker import _CapturingSpeaker
+from .creature_sim.fake_synth import _CapturingSynth
+from .creature_sim.fake_mem import _Mem
 from .creature_sim.fake_m5 import _M5
 from .llm import load_llm
 from .reflection import Creature, ReflectionLoop
@@ -62,7 +64,7 @@ def _install_realtime_shims(clock: RealtimeClock) -> None:
     time.ticks_add  = lambda a, b: int(a) + int(b)
 
 
-def _build_scope(*, send, imu, speaker, m5):
+def _build_scope(*, send, imu, speaker, synth, mem, m5):
     return {
         "__name__":   "__instinct__",
         "__builtins__": __builtins__,
@@ -73,6 +75,8 @@ def _build_scope(*, send, imu, speaker, m5):
         "struct":     struct,
         "Imu":        imu,
         "Speaker":    speaker,
+        "Synth":      synth,
+        "Mem":        mem,
         "M5":         m5,
     }
 
@@ -132,6 +136,10 @@ class SimSpine:
                                  os.path.join(session_dir, "input", "imu_reads.jsonl"))
         self.speaker = _CapturingSpeaker(self.clock,
                                          os.path.join(session_dir, "output", "audio_events.jsonl"))
+        self.synth = _CapturingSynth(self.clock,
+                                     os.path.join(session_dir, "output", "midi_events.jsonl"))
+        # One Mem for the whole session: it must survive every instinct hot-swap.
+        self.mem = _Mem()
         screen = devices.resolve(creature.device)["screen"]
         self.m5 = _M5(self.clock,
                       os.path.join(session_dir, "output", "display_log.jsonl"),
@@ -211,7 +219,7 @@ class SimSpine:
     def _start_instinct_task(self, code: str) -> None:
         scope = _build_scope(
             send=self._make_send(),
-            imu=self.imu, speaker=self.speaker, m5=self.m5,
+            imu=self.imu, speaker=self.speaker, synth=self.synth, mem=self.mem, m5=self.m5,
         )
         try:
             exec(compile(code, f"<instinct-v{self.loop.instinct_version}>", "exec"), scope)
@@ -310,6 +318,7 @@ class SimSpine:
 
         self.imu.close()
         self.speaker.close()
+        self.synth.close()
         self.m5.close()
 
 
@@ -318,10 +327,11 @@ def main():
     p.add_argument("creature_path",
                    help="A creature directory (typically sim_creatures/<name>).")
     src = p.add_mutually_exclusive_group(required=True)
-    src.add_argument("--imu", help="Path to an IMU stream (.npz or .jsonl, e.g. from bake-imu).")
+    src.add_argument("--imu", help="Path to an IMU stream (.npz or .jsonl).")
     src.add_argument("--from-mocap", metavar="CLIP",
-                     help="A baked mocap clip JSON; bridged to IMU on the fly and recorded "
-                          "as the run's source so the viewer shows the dancer + dense IMU.")
+                     help="A baked clip directory (data/mocap/<clip>/), its clip.json, or a "
+                          "raw .bvh/.npz; reads imu_<wrist>.jsonl and records it as the run's "
+                          "source so the viewer shows the dancer + dense IMU.")
     p.add_argument("--wrist", default="left", choices=("left", "right"),
                    help="Wrist to extract when using --from-mocap (default: left).")
     p.add_argument("--duration", type=float, default=None,
@@ -339,19 +349,26 @@ def main():
     creature = Creature(args.creature_path)
     llm, llm_info = load_llm(args.llm)
 
-    # Resolve the IMU stream. --from-mocap bridges the clip and records provenance
-    # (source/wrist/fps) so the viewer can draw the dancer skeleton + dense IMU.
+    # Resolve the IMU stream. --from-mocap reads the clip's pre-baked
+    # imu_<wrist>.jsonl and records provenance (source/wrist/fps) so the viewer
+    # can draw the dancer skeleton + dense IMU.
     source = wrist = fps = None
     if args.from_mocap:
-        if not os.path.isfile(args.from_mocap):
+        if not os.path.exists(args.from_mocap):
             raise SystemExit(f"mocap clip not found: {args.from_mocap}")
-        from .creature_sim.bridge import bake
-        imu_path = bake(args.from_mocap, args.wrist)
+        from .creature_sim.cli import _resolve_mocap_imu
+        imu_path = _resolve_mocap_imu(args.from_mocap, args.wrist)
         source, wrist = args.from_mocap, args.wrist
-        with open(args.from_mocap) as f:
-            fps = json.load(f).get("fps")
-        print(f"bridged {os.path.basename(args.from_mocap)} ({wrist} wrist) → {imu_path}",
-              file=sys.stderr)
+        clip_json = (os.path.join(args.from_mocap, "clip.json")
+                     if os.path.isdir(args.from_mocap) else args.from_mocap)
+        if os.path.isfile(clip_json) and clip_json.endswith(".json"):
+            try:
+                with open(clip_json) as f:
+                    fps = json.load(f).get("fps")
+            except Exception:
+                fps = None
+        print(f"mocap {os.path.basename(args.from_mocap.rstrip('/'))} ({wrist} wrist) "
+              f"→ {imu_path}", file=sys.stderr)
     else:
         imu_path = args.imu
 
