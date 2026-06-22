@@ -1,19 +1,37 @@
 """Extract per-frame joint positions/orientations + synthetic IMU from mocap.
 
-`bake-mocap <raw.npz>` reads an AMASS stage-II .npz, runs forward kinematics,
-synthesizes both wrists' IMU (device units + range), and writes a JSON for the
-skeleton viewer and the simulator:
+`bake-mocap <raw.npz|clip.bvh>` reads an AMASS stage-II .npz or a BVH file
+(e.g. a stitched loop from the bvh-stitch repo), runs forward kinematics,
+synthesizes both wrists' IMU (device units + range), and writes a self-contained
+**clip directory** under data/mocap/<stem>/:
+
+    data/mocap/<stem>/
+      source.bvh|.npz      # the input, copied in (the regeneration root)
+      skeleton_view.json   # stride-decimated skeleton + IMU, for the viewer
+      imu_left.jsonl       # full-rate left-wrist  {t, ax..az, gx..gz}
+      imu_right.jsonl      # full-rate right-wrist  (acc in g, gyro in deg/s)
+      clip.json            # manifest (fps, frames, source, regen command)
+
+The heavy full-rate skeleton (every joint, every frame) is *not* written by
+default — re-bake from source for it (`bake-mocap <dir>/source.* --full`). The
+viewer reads the decimated skeleton_view.json; the simulator reads imu_*.jsonl.
+
+`skeleton_view.json` schema:
 {
   fps, n_frames, joint_names, parents, bones,
-  frames: [ { p: [[x,y,z]*22], q: [[x,y,z,w]*22] }, ... ],
+  frames: [ { p: [[x,y,z]*J], q: [[x,y,z,w]*J] }, ... ],
   imu: { left: {acc, gyro}, right: {acc, gyro} }   # acc in g, gyro in deg/s
 }
 
-Coordinate frame: AMASS world (Z-up, meters). No rotation is baked in.
+Coordinate frame: AMASS world (Z-up, meters). BVH input (Y-up, arbitrary
+units) is scaled by the dancer's rest-pose height and rotated to match.
+For BVH the virtual sensor is a *watch*: distal forearm position, FOREARM
+bone orientation (wrist flexion does not contaminate the signal).
 """
 
 import argparse
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -303,105 +321,262 @@ def synthesize_imu(pos: np.ndarray, R: np.ndarray, fps: float, *,
     return {"acc": acc_sensor, "gyro": gyro_sensor}
 
 
-def default_out_dir() -> Path:
-    """Where baked JSON lands: <repo>/data/mocap/out, or ./data/mocap/out."""
+def default_mocap_dir() -> Path:
+    """The clip collection root: <repo>/data/mocap, or ./data/mocap."""
     root = find_repo_root()
-    return Path(root) / "data" / "mocap" / "out" if root else Path("data/mocap/out")
+    return Path(root) / "data" / "mocap" if root else Path("data/mocap")
 
 
-def process(npz_path: Path, out_path: Path | None = None, stride: int = 1,
-            start: float = 0.0) -> Path:
-    """Bake a mocap .npz into a skeleton+IMU JSON. Returns the output path."""
+def default_clip_dir(stem: str) -> Path:
+    """Where a baked clip's bundle lands: <repo>/data/mocap/<stem>/."""
+    return default_mocap_dir() / stem
+
+
+def write_imu_jsonl(t_ms: np.ndarray, accel: np.ndarray, gyro: np.ndarray,
+                    out_path: Path) -> Path:
+    """Write a one-sensor {t, ax..az, gx..gz} jsonl stream (g & deg/s).
+
+    This is the IMU-stream contract the simulator reads (docs/SIM.md Decision 2);
+    the harness's bridge re-exports it. `t` in ms, accel in g, gyro in deg/s.
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as f:
+        for i in range(len(t_ms)):
+            a, g = accel[i], gyro[i]
+            f.write(json.dumps({
+                "t": round(float(t_ms[i]), 3),
+                "ax": round(float(a[0]), 4), "ay": round(float(a[1]), 4), "az": round(float(a[2]), 4),
+                "gx": round(float(g[0]), 4), "gy": round(float(g[1]), 4), "gz": round(float(g[2]), 4),
+            }) + "\n")
+    return out_path
+
+
+def _skeleton_payload(pos: np.ndarray, quat: np.ndarray, joint_names: list,
+                      parents: list, fps: float, imus: dict) -> dict:
+    """Build the viewer/skeleton JSON payload (skeleton frames + embedded IMU)."""
+    return {
+        "fps": fps,
+        "n_frames": int(pos.shape[0]),
+        "joint_names": joint_names,
+        "parents": list(parents),
+        "bones": [(c, int(parents[c])) for c in range(1, len(parents))],
+        "frames": [
+            {"p": pos[t].round(5).tolist(), "q": quat[t].round(5).tolist()}
+            for t in range(pos.shape[0])
+        ],
+        "imu": {
+            side: {"acc": d["acc"].round(4).tolist(), "gyro": d["gyro"].round(4).tolist()}
+            for side, d in imus.items()
+        },
+    }
+
+
+def _dump(path: Path, obj: dict, indent: int | None = None) -> Path:
+    with open(path, "w") as f:
+        json.dump(obj, f, separators=(",", ":") if indent is None else (",", ": "),
+                  indent=indent)
+    return path
+
+
+def _write_bundle(out_dir: Path, *, source: Path, pos: np.ndarray, quat: np.ndarray,
+                  joint_names: list, parents: list, fps: float, imus: dict,
+                  view_stride: int, write_full: bool, manifest_extra: dict) -> Path:
+    """Write a self-contained clip directory (see module docstring)."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # The input, copied in as the regeneration root.
+    src_dst = out_dir / f"source{source.suffix.lower()}"
+    shutil.copy2(source, src_dst)
+
+    # Full-rate per-wrist IMU streams (what the simulator reads).
+    n = pos.shape[0]
+    t_ms = np.arange(n, dtype=np.float64) / fps * 1000.0
+    for side, d in imus.items():
+        write_imu_jsonl(t_ms, d["acc"], d["gyro"], out_dir / f"imu_{side}.jsonl")
+
+    # Decimated skeleton + IMU for the viewer.
+    sv = max(1, int(view_stride))
+    view_imus = {s: {"acc": d["acc"][::sv], "gyro": d["gyro"][::sv]} for s, d in imus.items()}
+    view = _skeleton_payload(pos[::sv], quat[::sv], joint_names, parents, fps / sv, view_imus)
+    vp = _dump(out_dir / "skeleton_view.json", view)
+    print(f"  wrote {vp.name}  ({vp.stat().st_size / 1e6:.1f} MB, {view['n_frames']} frames @ {fps/sv:.1f} Hz)")
+
+    # Optional heavy full-rate skeleton (regeneration / debugging only).
+    if write_full:
+        full = _skeleton_payload(pos, quat, joint_names, parents, fps, imus)
+        fp = _dump(out_dir / "skeleton.json", full)
+        print(f"  wrote {fp.name}  ({fp.stat().st_size / 1e6:.1f} MB, full rate)")
+
+    root = find_repo_root()
+    try:
+        rel_dir = out_dir.resolve().relative_to(root) if root else out_dir
+    except ValueError:
+        rel_dir = out_dir
+    manifest = {
+        "name": out_dir.name,
+        "source": src_dst.name,
+        "origin": str(source),
+        "fps": round(fps, 4),
+        "n_frames": int(n),
+        "duration_s": round(n / fps, 2),
+        "view_stride": sv,
+        "wrists": list(imus.keys()),
+        "regenerate": f"bake-mocap {rel_dir}/{src_dst.name}  (add --full for skeleton.json)",
+        **manifest_extra,
+    }
+    _dump(out_dir / "clip.json", manifest, indent=2)
+    print(f"  wrote clip.json  →  {out_dir}/")
+    return out_dir
+
+
+def _trim_start(pos, quat, imus, fps, start):
+    """Drop the first `start` seconds (e.g. an opening static T-pose).
+
+    Sliced AFTER IMU synthesis so the first kept frame keeps the accel/gyro it
+    derived from its real neighbours (no boundary spike). The clip stays 0-based.
+    """
+    if not start:
+        return pos, quat, imus
+    start_frame = round(start * fps)
+    if start_frame >= pos.shape[0]:
+        raise ValueError(
+            f"--start {start}s leaves no frames (clip is {pos.shape[0] / fps:.1f}s)")
+    pos = pos[start_frame:]
+    quat = quat[start_frame:]
+    imus = {s: {"acc": d["acc"][start_frame:], "gyro": d["gyro"][start_frame:]}
+            for s, d in imus.items()}
+    print(f"  trimmed {start:.1f}s ({start_frame} frames) → {pos.shape[0]} frames "
+          f"({pos.shape[0] / fps:.1f}s)")
+    return pos, quat, imus
+
+
+def process(npz_path: Path, out_dir: Path | None = None, *, view_stride: int = 4,
+            write_full: bool = False, start: float = 0.0) -> Path:
+    """Bake an AMASS .npz into a clip directory. Returns the directory path."""
     npz_path = Path(npz_path)
     data = np.load(npz_path, allow_pickle=True)
-    fps = float(data["mocap_frame_rate"]) / stride
-    root_orient = data["root_orient"][::stride]
-    pose_body = data["pose_body"][::stride]
-    trans = data["trans"][::stride]
+    fps = float(data["mocap_frame_rate"])
+    root_orient, pose_body, trans = data["root_orient"], data["pose_body"], data["trans"]
 
     print(f"Loaded {npz_path.name}: T={len(trans)}, fps={fps}, gender={data['gender']}")
 
     pos, R_world = forward_kinematics(root_orient, pose_body, trans)
     quat = matrix_to_quat_xyzw(R_world)  # (T,22,4) xyzw
 
-    # Sanity: bone-length invariance (since we use fixed offsets they MUST be
-    # constant; this catches axis-angle/quaternion bugs).
-    bone_len = np.linalg.norm(pos[:, 1:] - pos[:, PARENTS[1:]], axis=-1)  # (T,21)
-    var = bone_len.std(axis=0).max()
+    # Sanity: bone-length invariance (fixed offsets => constant; catches bugs).
+    var = np.linalg.norm(pos[:, 1:] - pos[:, PARENTS[1:]], axis=-1).std(axis=0).max()
     print(f"  bone-length std max: {var:.2e} m  (expect ~0)")
-
     if not np.isfinite(pos).all() or not np.isfinite(quat).all():
         raise ValueError("non-finite values in output")
 
-    # ---- Synthetic IMU for both wrists ------------------------------------
-    l_idx = JOINT_NAMES.index("l_wrist")
-    r_idx = JOINT_NAMES.index("r_wrist")
-    imu_l = synthesize_imu(pos[:, l_idx], R_world[:, l_idx], fps)
-    imu_r = synthesize_imu(pos[:, r_idx], R_world[:, r_idx], fps)
-    for side, imu in (("left", imu_l), ("right", imu_r)):
-        amax = np.linalg.norm(imu["acc"], axis=-1).max()
-        gmax = np.linalg.norm(imu["gyro"], axis=-1).max()
+    l_idx, r_idx = JOINT_NAMES.index("l_wrist"), JOINT_NAMES.index("r_wrist")
+    imus = {"left":  synthesize_imu(pos[:, l_idx], R_world[:, l_idx], fps),
+            "right": synthesize_imu(pos[:, r_idx], R_world[:, r_idx], fps)}
+    _report_imu(imus)
+
+    pos, quat, imus = _trim_start(pos, quat, imus, fps, start)
+
+    out_dir = Path(out_dir) if out_dir else default_clip_dir(npz_path.stem)
+    return _write_bundle(out_dir, source=npz_path, pos=pos, quat=quat,
+                         joint_names=list(JOINT_NAMES), parents=PARENTS.tolist(),
+                         fps=fps, imus=imus, view_stride=view_stride,
+                         write_full=write_full,
+                         manifest_extra=({"trim_start_s": start} if start else {}))
+
+
+def process_bvh(bvh_path: Path, out_dir: Path | None = None, *, view_stride: int = 4,
+                height_m: float = 1.70, write_full: bool = False,
+                start: float = 0.0) -> Path:
+    """Bake a BVH clip into a clip directory. Returns the directory path."""
+    from . import bvh as B
+
+    bvh_path = Path(bvh_path)
+    clip = B.load(str(bvh_path))
+    motion = clip.motion
+    fps = clip.fps
+    print(f"Loaded {bvh_path.name}: T={len(motion)}, fps={fps:.1f}, "
+          f"{len(clip.joints)} joints")
+
+    scale = B.meters_per_unit(clip, height_m)
+    print(f"  scale: {scale:.4f} m/unit (rest-pose height {height_m} m)")
+
+    pos_yup, rot_yup = B.forward_kinematics(clip, motion)
+
+    # watch sensors before any reframing (mount is defined in BVH rest pose)
+    imus = {}
+    for side in ("left", "right"):
+        p, R = B.watch_frames(clip, pos_yup, rot_yup, side)
+        p_z, R_z = B.to_z_up(p * scale, R)
+        imus[side] = synthesize_imu(p_z, R_z, fps)
+    _report_imu(imus)
+
+    pos, rot = B.to_z_up(pos_yup * scale, rot_yup)
+    quat = matrix_to_quat_xyzw(rot)
+
+    parents = [j.parent for j in clip.joints]
+    var = np.linalg.norm(pos[:, 1:] - pos[:, parents[1:]], axis=-1).std(axis=0).max()
+    print(f"  bone-length std max: {var:.2e} m  (expect ~0)")
+    if not np.isfinite(pos).all() or not np.isfinite(quat).all():
+        raise ValueError("non-finite values in output")
+
+    # name the hand joints l_wrist / r_wrist so the viewer highlights them
+    rename = {B.find_chain(clip, "left")[1]: "l_wrist",
+              B.find_chain(clip, "right")[1]: "r_wrist"}
+    joint_names = [rename.get(i, j.name) for i, j in enumerate(clip.joints)]
+
+    pos, quat, imus = _trim_start(pos, quat, imus, fps, start)
+
+    out_dir = Path(out_dir) if out_dir else default_clip_dir(bvh_path.stem)
+    return _write_bundle(out_dir, source=bvh_path, pos=pos, quat=quat,
+                         joint_names=joint_names, parents=parents, fps=fps,
+                         imus=imus, view_stride=view_stride, write_full=write_full,
+                         manifest_extra={"height_m": height_m,
+                                         **({"trim_start_s": start} if start else {})})
+
+
+def _report_imu(imus: dict) -> None:
+    for side, d in imus.items():
+        amax = np.linalg.norm(d["acc"], axis=-1).max()
+        gmax = np.linalg.norm(d["gyro"], axis=-1).max()
         print(f"  IMU {side:>5}: |acc|_max={amax:6.2f} g  |gyro|_max={gmax:7.1f} deg/s")
 
-    # Trim a static prefix (e.g. AMASS opens with a calibration T-pose). Slice
-    # AFTER IMU synthesis so the first kept frame keeps the accel/gyro it derived
-    # from its real neighbours — no boundary spike. The clip stays 0-based.
-    start_frame = round(start * fps)
-    if start_frame > 0:
-        if start_frame >= pos.shape[0]:
-            raise ValueError(
-                f"--start {start}s leaves no frames (clip is {pos.shape[0] / fps:.1f}s)")
-        pos = pos[start_frame:]
-        quat = quat[start_frame:]
-        imu_l = {k: v[start_frame:] for k, v in imu_l.items()}
-        imu_r = {k: v[start_frame:] for k, v in imu_r.items()}
-        print(f"  trimmed {start:.1f}s ({start_frame} frames) → {pos.shape[0]} frames "
-              f"({pos.shape[0] / fps:.1f}s)")
 
-    out_path = Path(out_path) if out_path else (default_out_dir() / f"{npz_path.stem}.json")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    payload = {
-        "fps": fps,
-        "n_frames": int(pos.shape[0]),
-        "trim_start_s": start,
-        "joint_names": JOINT_NAMES,
-        "parents": PARENTS.tolist(),
-        "bones": BONES,
-        "frames": [
-            {
-                "p": pos[t].round(5).tolist(),
-                "q": quat[t].round(5).tolist(),
-            }
-            for t in range(pos.shape[0])
-        ],
-        "imu": {
-            "left":  {"acc": imu_l["acc"].round(4).tolist(),  "gyro": imu_l["gyro"].round(4).tolist()},
-            "right": {"acc": imu_r["acc"].round(4).tolist(), "gyro": imu_r["gyro"].round(4).tolist()},
-        },
-    }
-    with open(out_path, "w") as f:
-        json.dump(payload, f, separators=(",", ":"))
-    print(f"  wrote {out_path}  ({out_path.stat().st_size / 1e6:.1f} MB)")
-    return out_path
+def process_any(path: Path, out_dir: Path | None = None, *, view_stride: int = 4,
+                height_m: float = 1.70, write_full: bool = False,
+                start: float = 0.0) -> Path:
+    """Dispatch on suffix: .npz -> AMASS path, .bvh -> BVH path."""
+    path = Path(path)
+    if path.suffix.lower() == ".bvh":
+        return process_bvh(path, out_dir, view_stride=view_stride, height_m=height_m,
+                           write_full=write_full, start=start)
+    return process(path, out_dir, view_stride=view_stride, write_full=write_full,
+                   start=start)
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Bake a mocap .npz into skeleton+IMU JSON.")
-    ap.add_argument("npz", type=Path)
-    ap.add_argument("-o", "--out", type=Path, default=None,
-                    help="Output JSON path (default: data/mocap/out/<stem>.json)")
-    ap.add_argument("--stride", type=int, default=1,
-                    help="Frame stride (e.g. 2 to halve framerate).")
+    ap = argparse.ArgumentParser(
+        description="Bake a mocap .npz (AMASS) or .bvh into a data/mocap/<stem>/ clip directory.")
+    ap.add_argument("input", type=Path, help="AMASS .npz or BVH file")
+    ap.add_argument("-o", "--out-dir", type=Path, default=None,
+                    help="Output clip directory (default: data/mocap/<stem>/)")
+    ap.add_argument("--view-stride", type=int, default=4,
+                    help="Decimation for skeleton_view.json (default: 4, e.g. 120->30 Hz).")
+    ap.add_argument("--full", action="store_true",
+                    help="Also write the heavy full-rate skeleton.json.")
+    ap.add_argument("--height", type=float, default=1.70,
+                    help="Dancer height in meters; sets the BVH unit scale.")
     ap.add_argument("--start", type=float, default=0.0, metavar="SECONDS",
                     help="Drop the first SECONDS (e.g. an opening static T-pose).")
     args = ap.parse_args()
 
-    if not args.npz.exists():
-        print(f"input not found: {args.npz}", file=sys.stderr)
+    if not args.input.exists():
+        print(f"input not found: {args.input}", file=sys.stderr)
         return 1
     try:
-        process(args.npz, args.out, args.stride, args.start)
+        process_any(args.input, args.out_dir, view_stride=args.view_stride,
+                    height_m=args.height, write_full=args.full, start=args.start)
     except ValueError as e:
         print(f"  ERROR: {e}", file=sys.stderr)
         return 2

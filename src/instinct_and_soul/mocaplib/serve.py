@@ -1,8 +1,10 @@
 """skeleton — bake (if needed) and serve the mocap skeleton + IMU viewer.
 
-    skeleton                       # newest JSON in data/mocap/out/
-    skeleton data/mocap/out/x.json # serve a specific baked JSON
-    skeleton data/mocap/raw/x.npz  # bake it first, then serve
+    skeleton                            # newest clip in data/mocap/
+    skeleton data/mocap/<clip>/         # serve that clip's skeleton_view.json
+    skeleton data/mocap/<clip>/x.json   # serve a specific baked skeleton JSON
+    skeleton path/to/clip.bvh           # bake a BVH into a clip first, then serve
+    skeleton path/to/raw.npz            # bake an AMASS npz first, then serve
 """
 import argparse
 import http.server
@@ -14,27 +16,40 @@ from pathlib import Path
 from urllib.parse import quote
 
 from . import find_repo_root
-from .extract import process, default_out_dir
+from .extract import process_any, default_mocap_dir
+
+
+def _clip_view(clip_dir: Path) -> Path:
+    """The viewer JSON inside a clip directory (view, else full skeleton)."""
+    for name in ("skeleton_view.json", "skeleton.json"):
+        if (clip_dir / name).is_file():
+            return clip_dir / name
+    raise SystemExit(f"clip {clip_dir} has no skeleton_view.json — re-bake it?")
 
 
 def resolve_json(arg: str | None) -> Path:
-    """Return a baked JSON path. Bakes a .npz; defaults to newest baked file."""
+    """Return a skeleton JSON to serve. Bakes a .npz/.bvh; defaults to newest clip."""
     if arg is None:
-        out_dir = default_out_dir()
-        jsons = sorted(out_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)
-        if not jsons:
+        clips = sorted(default_mocap_dir().glob("*/clip.json"),
+                       key=lambda p: p.stat().st_mtime)
+        if not clips:
             raise SystemExit(
-                f"no baked mocap in {out_dir} — run `bake-mocap <raw.npz>` first")
-        return jsons[-1]
+                f"no baked clips in {default_mocap_dir()} — run "
+                f"`bake-mocap <clip.bvh|raw.npz>` first")
+        return _clip_view(clips[-1].parent)
     p = Path(arg)
     if not p.exists():
         raise SystemExit(f"not found: {p}")
-    if p.suffix == ".npz":
+    if p.is_dir():
+        return _clip_view(p)
+    if p.name == "clip.json":
+        return _clip_view(p.parent)
+    if p.suffix.lower() in (".npz", ".bvh"):
         print(f"baking {p.name}…", file=sys.stderr)
-        return process(p)
+        return _clip_view(Path(process_any(p)))
     if p.suffix == ".json":
         return p
-    raise SystemExit(f"expected a .json or .npz, got {p}")
+    raise SystemExit(f"expected a clip dir, a .json, or a .npz/.bvh, got {p}")
 
 
 def main() -> int:
