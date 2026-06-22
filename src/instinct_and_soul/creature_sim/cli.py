@@ -2,11 +2,33 @@
 import argparse
 import os
 import sys
+from pathlib import Path
 
 from . import devices
-from .bridge import bake
 from .fake_imu import load_imu_source
 from .runner import run_sim
+
+
+def _resolve_mocap_imu(arg: str, wrist: str) -> str:
+    """Resolve --from-mocap to a one-wrist IMU jsonl stream.
+
+    Accepts a clip directory (data/mocap/<clip>/, uses its imu_<wrist>.jsonl),
+    a clip.json manifest, or a raw .bvh/.npz (baked into a clip bundle first).
+    """
+    p = Path(arg)
+    if p.is_dir():
+        p = p / "clip.json" if (p / "clip.json").is_file() else p
+    if p.name == "clip.json" and p.is_file():
+        imu = p.parent / f"imu_{wrist}.jsonl"
+        if not imu.is_file():
+            raise SystemExit(f"clip {p.parent} has no {imu.name} (re-bake it?)")
+        return str(imu)
+    if p.suffix.lower() in (".bvh", ".npz"):
+        from ..mocaplib.extract import process_any
+        clip_dir = Path(process_any(p))
+        return str(clip_dir / f"imu_{wrist}.jsonl")
+    raise SystemExit(f"--from-mocap: expected a clip dir, clip.json, "
+                     f"or .bvh/.npz — got {arg}")
 
 
 def _resolve_instinct_path(arg: str) -> str:
@@ -29,8 +51,8 @@ def main():
     src.add_argument("--imu",
                      help="Path to an IMU stream: .npz (t_ms/accel/gyro) or .jsonl.")
     src.add_argument("--from-mocap", metavar="CLIP",
-                     help="A baked mocap clip JSON (bake-mocap output); bridged to an "
-                          "IMU stream on the fly under sim_in/.")
+                     help="A baked clip directory (data/mocap/<clip>/), its clip.json, "
+                          "or a raw .bvh/.npz; uses/derives imu_<wrist>.jsonl.")
     p.add_argument("--wrist", default="left", choices=("left", "right"),
                    help="Wrist to extract when using --from-mocap (default: left).")
     p.add_argument("--duration", type=float, default=None,
@@ -52,10 +74,10 @@ def main():
     screen = devices.resolve(device)["screen"]
 
     if args.from_mocap:
-        if not os.path.isfile(args.from_mocap):
+        if not os.path.exists(args.from_mocap):
             raise SystemExit(f"mocap clip not found: {args.from_mocap}")
-        imu_path = bake(args.from_mocap, args.wrist)
-        print(f"bridged {os.path.basename(args.from_mocap)} ({args.wrist} wrist) "
+        imu_path = _resolve_mocap_imu(args.from_mocap, args.wrist)
+        print(f"mocap {os.path.basename(args.from_mocap.rstrip('/'))} ({args.wrist} wrist) "
               f"→ {imu_path}", file=sys.stderr)
     else:
         imu_path = args.imu
@@ -119,6 +141,7 @@ def main():
     print(f"  final virtual time: {summary['final_ms']/1000.0:.2f}s", file=sys.stderr)
     print(f"  imu reads:    {summary['imu_reads']}", file=sys.stderr)
     print(f"  audio events: {summary['audio_events']}", file=sys.stderr)
+    print(f"  midi events:  {summary['midi_events']}", file=sys.stderr)
     print(f"  display calls:{summary['display_calls']}", file=sys.stderr)
     print(f"  sent:         {summary['sent']}", file=sys.stderr)
     if summary['crashed']:
@@ -127,6 +150,10 @@ def main():
     if summary['audio_events'] > 0:
         print(f"\nRender audio: bake-audio {output}/output/audio_events.jsonl "
               f"-o {output}/output/audio.wav", file=sys.stderr)
+
+    if summary['midi_events'] > 0:
+        print(f"\nRender MIDI:  bake-midi {output}/output/midi_events.jsonl "
+              f"-o {output}/output/music.wav", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from typing import Optional
 from .clock import Clock
 from .fake_imu import NpzImuSource, _CapturingImu
 from .fake_speaker import _CapturingSpeaker
+from .fake_synth import _CapturingSynth
 from .fake_m5 import _M5
 
 
@@ -48,7 +49,7 @@ def _patch_modules(clock: Clock, duration_ms: float):
     time.sleep_ms   = lambda n: clock.advance(float(n))  # synchronous variant
 
 
-def _build_scope(*, send, imu, speaker, m5):
+def _build_scope(*, send, imu, speaker, synth, m5):
     return {
         "__name__":   "__instinct__",
         "__builtins__": __builtins__,
@@ -59,6 +60,7 @@ def _build_scope(*, send, imu, speaker, m5):
         "struct":     struct,
         "Imu":        imu,
         "Speaker":    speaker,
+        "Synth":      synth,
         "M5":         m5,
     }
 
@@ -88,6 +90,7 @@ def run_sim(
     clock = Clock()
     imu = _CapturingImu(imu_source, clock, os.path.join(output_dir, "input", "imu_reads.jsonl"))
     speaker = _CapturingSpeaker(clock, os.path.join(output_dir, "output", "audio_events.jsonl"))
+    synth = _CapturingSynth(clock, os.path.join(output_dir, "output", "midi_events.jsonl"))
     m5 = _M5(clock, os.path.join(output_dir, "output", "display_log.jsonl"), screen=screen)
 
     sent_path = os.path.join(output_dir, "comms", "sent.jsonl")
@@ -98,7 +101,7 @@ def run_sim(
 
     _patch_modules(clock, duration_ms)
 
-    scope = _build_scope(send=captured_send, imu=imu, speaker=speaker, m5=m5)
+    scope = _build_scope(send=captured_send, imu=imu, speaker=speaker, synth=synth, m5=m5)
 
     try:
         exec(compile(instinct_code, "<instinct>", "exec"), scope)
@@ -106,6 +109,7 @@ def run_sim(
         sent_log.close()
         imu.close()
         speaker.close()
+        synth.close()
         m5.close()
         traceback.print_exc()
         raise RuntimeError("instinct code failed to load (see traceback above)")
@@ -135,6 +139,7 @@ def run_sim(
         sent_log.close()
         imu.close()
         speaker.close()
+        synth.close()
         m5.close()
 
     # Session provenance: caller-supplied context + runtime-derived fields.
@@ -157,6 +162,7 @@ def run_sim(
         "final_ms": clock.now_ms,
         "imu_reads":    _count(os.path.join(output_dir, "input",  "imu_reads.jsonl")),
         "audio_events": _count(os.path.join(output_dir, "output", "audio_events.jsonl")),
+        "midi_events":  _count(os.path.join(output_dir, "output", "midi_events.jsonl")),
         "display_calls":_count(os.path.join(output_dir, "output", "display_log.jsonl")),
         "sent":         _count(os.path.join(output_dir, "comms",  "sent.jsonl")),
         "crashed":      crash_path is not None,

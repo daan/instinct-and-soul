@@ -15,6 +15,7 @@ dependencies = [
     "websockets>=16.0",
     "numpy>=2.0",
     "soundfile>=0.12",
+    "mido>=1.3.3",
     "google-genai>=1.0",
 ]
 
@@ -27,6 +28,7 @@ bake-trace = "instinct_and_soul.tracelib.cli:main"
 trace = "instinct_and_soul.tracelib.serve:main"
 creature-sim = "instinct_and_soul.creature_sim.cli:main"
 bake-audio = "instinct_and_soul.creature_sim.bake_audio:main"
+bake-midi = "instinct_and_soul.creature_sim.bake_midi:main"
 bake-imu = "instinct_and_soul.creature_sim.bridge:main"
 bake-video = "instinct_and_soul.creature_sim.bake_video:main"
 sim-spine = "instinct_and_soul.sim_spine:main"
