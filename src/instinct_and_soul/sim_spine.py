@@ -20,8 +20,6 @@ import time
 import traceback
 
 from .creature_sim import devices
-from .creature_sim.clock import Clock
-from .creature_sim.runner import StopSimulation
 from .creature_sim.fake_imu import load_imu_source, _CapturingImu
 from .creature_sim.fake_speaker import _CapturingSpeaker
 from .creature_sim.fake_synth import _CapturingSynth
@@ -32,18 +30,39 @@ from .reflection import Creature, ReflectionLoop
 
 
 class RealtimeClock:
-    """Drop-in for creature_sim.Clock that tracks wall-clock instead of virtual.
+    """Wall-clock with a freeze. Creature-time = wall − time spent frozen.
 
-    Same `now_ms` interface as Clock so the existing fake_imu / fake_speaker /
-    fake_m5 modules can be reused unchanged.
+    Same `now_ms` interface as creature_sim.Clock, so fake_imu/speaker/synth/m5
+    reuse it unchanged. While frozen (the body waits for a slow reflection), the
+    creature's clock stops, so the IMU/music don't skip and every reflection
+    costs exactly `reflection_time` of the creature's own timeline regardless of
+    how long the real LLM took.
     """
 
     def __init__(self):
         self._start = time.monotonic()
+        self._frozen_total = 0.0       # seconds of creature-time skipped
+        self._frozen_since = None      # monotonic when the current freeze began
 
     @property
     def now_ms(self) -> float:
-        return (time.monotonic() - self._start) * 1000.0
+        frozen = self._frozen_total
+        if self._frozen_since is not None:
+            frozen += time.monotonic() - self._frozen_since
+        return (time.monotonic() - self._start - frozen) * 1000.0
+
+    @property
+    def frozen(self) -> bool:
+        return self._frozen_since is not None
+
+    def freeze(self) -> None:
+        if self._frozen_since is None:
+            self._frozen_since = time.monotonic()
+
+    def unfreeze(self) -> None:
+        if self._frozen_since is not None:
+            self._frozen_total += time.monotonic() - self._frozen_since
+            self._frozen_since = None
 
     def ticks_ms(self) -> int:
         return int(self.now_ms)
@@ -54,22 +73,49 @@ class RealtimeClock:
         pass
 
 
-# Real-time replacements for uasyncio-only / micropython-only APIs.
-def _install_realtime_shims(clock: RealtimeClock) -> None:
-    async def sleep_ms(n):
-        await asyncio.sleep(float(n) / 1000.0)
-    asyncio.sleep_ms = sleep_ms
+# Patch MicroPython-only time.ticks_* onto the real module. sleep_ms/create_task
+# reach the instinct via the per-run asyncio shim below, not by patching the
+# module — so a creature's tasks are tracked and the freeze can be applied.
+def _patch_time(clock) -> None:
     time.ticks_ms   = lambda: int(clock.now_ms)
     time.ticks_diff = lambda a, b: int(a) - int(b)
     time.ticks_add  = lambda a, b: int(a) + int(b)
+    time.sleep_ms   = lambda n: None     # synchronous blocking sleep — no-op
 
 
-def _build_scope(*, send, imu, speaker, synth, mem, m5):
+class _RTAsyncio:
+    """The instinct's `asyncio`: real asyncio, but `sleep_ms` applies the
+    reflection freeze and `create_task`/`gather` are tracked so a hot-swap can
+    cancel the whole previous instinct (root + the coroutines it spawned)."""
+
+    def __init__(self, spine):
+        self._spine = spine
+
+    def sleep_ms(self, n):
+        return self._spine._body_sleep_ms(n)
+
+    def sleep(self, seconds):
+        return self._spine._body_sleep_ms(float(seconds) * 1000.0)
+
+    def create_task(self, coro):
+        t = asyncio.ensure_future(coro)
+        self._spine._body_tasks.append(t)
+        return t
+
+    def gather(self, *aws, **kw):
+        aws = [self.create_task(a) if asyncio.iscoroutine(a) else a for a in aws]
+        return asyncio.gather(*aws, **kw)
+
+    def __getattr__(self, name):
+        return getattr(asyncio, name)
+
+
+def _build_scope(*, send, aio, imu, speaker, synth, mem, m5):
     return {
         "__name__":   "__instinct__",
         "__builtins__": __builtins__,
         "send":       send,
-        "asyncio":    asyncio,
+        "asyncio":    aio,
         "time":       time,
         "math":       math,
         "struct":     struct,
@@ -96,23 +142,21 @@ class SimSpine:
         else:
             self.duration_ms = duration_ms
 
-        # Clock mode. Default: real-time (latency == real LLM time). With a
-        # reflection_time: virtual time — the dance generates fast and each
-        # reflection occupies a fixed `reflection_time` of simulated time.
-        self.virtual = reflection_time is not None
+        # Real-time clock. With --reflection-time (budgeted), each reflection
+        # costs the creature exactly that much of its own timeline: the body
+        # plays the budget with the current instinct, then the clock FREEZES
+        # until the soul replies and the new instinct swaps in. Without it,
+        # reflections just fire as the instinct sends and deploy when the LLM
+        # returns (the body keeps dancing meanwhile).
+        self.clock = RealtimeClock()
+        self.budgeted = reflection_time is not None
         self.reflection_time = reflection_time
         self.reflection_time_ms = None if reflection_time is None else reflection_time * 1000.0
-        self.clock = Clock() if self.virtual else RealtimeClock()
-        # Reflection-budget gate (virtual mode): the body advances at most
-        # reflection_time of virtual time per reflection, then blocks here.
-        self._reflect_deadline = None
-        self._reflect_done = asyncio.Event()
-        # Patch uasyncio/micropython-only APIs (asyncio.sleep_ms, time.ticks_*)
-        # onto the stdlib modules BEFORE any instinct runs.
-        if self.virtual:
-            self._install_virtual_shims()
-        else:
-            _install_realtime_shims(self.clock)
+        self._reflect_deadline = None            # creature-time the budget ends
+        self._deadline_reached = asyncio.Event() # set when the body hits the deadline
+        self._reflect_release = asyncio.Event()  # set to release the frozen body
+        self._body_tasks: list[asyncio.Task] = []  # the current instinct's tasks
+        _patch_time(self.clock)
 
         self.loop = ReflectionLoop(
             creature, llm,
@@ -156,37 +200,14 @@ class SimSpine:
                 "source": source,          # mocap clip → enables the viewer's dancer + dense IMU
                 "wrist": wrist,
                 "fps": fps,
-                "clock_mode": "virtual" if self.virtual else "real",
-                "reflection_time_s": self.reflection_time,   # None in real mode
+                "clock_mode": "budgeted" if self.budgeted else "realtime",
+                "reflection_time_s": self.reflection_time,   # None = no freeze budget
                 "started_at": time.time(),
             }, f, indent=2)
 
         self._instinct_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
         self._stopping = False   # suppress auto-refire once we're shutting down
-
-    def _install_virtual_shims(self) -> None:
-        """Virtual sleep_ms: advance the clock instantly (no wall delay), stop at
-        the duration cap, and block at the per-reflection budget so the body
-        dances exactly `reflection_time` of virtual time per reflection."""
-        clock = self.clock
-
-        async def sleep_ms(n):
-            n = float(n)
-            if clock.now_ms + n > self.duration_ms:
-                clock.advance(max(0.0, self.duration_ms - clock.now_ms))
-                raise StopSimulation()
-            clock.advance(n)
-            if self._reflect_deadline is not None and clock.now_ms >= self._reflect_deadline:
-                await self._reflect_done.wait()   # wait (real time) for the soul
-            else:
-                await asyncio.sleep(0)            # yield so reflection tasks run
-
-        asyncio.sleep_ms = sleep_ms
-        time.ticks_ms   = lambda: int(clock.now_ms)
-        time.ticks_diff = lambda a, b: int(a) - int(b)
-        time.ticks_add  = lambda a, b: int(a) + int(b)
-        time.sleep_ms   = lambda n: clock.advance(float(n))
 
     # ── Loop callbacks ────────────────────────────────────────────────
 
@@ -200,6 +221,13 @@ class SimSpine:
         print(f"\n  intent ({time_str}):\n    {intent}\n", file=sys.stderr)
 
     async def _deploy(self, code: str, version: int) -> None:
+        # Only *gate* the swap: don't deploy before the reflection_time budget has
+        # elapsed on the creature clock, even if the LLM was fast. The unfreeze /
+        # release is done by _maybe_reflect once reflect() returns (so it also
+        # covers reflections that change nothing and never call _deploy). While
+        # shutting down the body is gone, so don't wait on the budget.
+        if self.budgeted and not self._stopping:
+            await self._deadline_reached.wait()
         self._log(f"hot-swapping to instinct v{version}", "cyan")
         await self._stop_instinct_task()
         self._start_instinct_task(code)
@@ -216,9 +244,24 @@ class SimSpine:
             asyncio.create_task(self._maybe_reflect())
         return send
 
+    async def _body_sleep_ms(self, n):
+        """The instinct's sleep: a real sleep, then — in budgeted mode — freeze
+        at the reflection deadline until the swap releases the body."""
+        await asyncio.sleep(float(n) / 1000.0)
+        while (self.budgeted and self._reflect_deadline is not None
+               and self.clock.now_ms >= self._reflect_deadline):
+            self.clock.freeze()
+            self._deadline_reached.set()
+            await self._reflect_release.wait()
+        # End the clip promptly the moment the creature has danced its full
+        # duration (checked every tick, so it doesn't overshoot under load).
+        if self.clock.now_ms >= self.duration_ms:
+            self._stop_event.set()
+
     def _start_instinct_task(self, code: str) -> None:
+        self._body_tasks = []
         scope = _build_scope(
-            send=self._make_send(),
+            send=self._make_send(), aio=_RTAsyncio(self),
             imu=self.imu, speaker=self.speaker, synth=self.synth, mem=self.mem, m5=self.m5,
         )
         try:
@@ -237,38 +280,51 @@ class SimSpine:
                 await scope["run"]()
             except asyncio.CancelledError:
                 pass
-            except StopSimulation:
-                self._stop_event.set()   # virtual duration cap reached — clean stop
             except Exception:
                 tb = traceback.format_exc()
                 self.loop.add_crash("CRASH:" + tb.strip().split("\n")[-1])
-                asyncio.create_task(self._maybe_reflect())
+                if not self._stopping:
+                    asyncio.create_task(self._maybe_reflect())
 
         self._instinct_task = asyncio.create_task(wrapped())
 
     async def _stop_instinct_task(self) -> None:
-        t = self._instinct_task
-        if t is not None and not t.done():
+        # Cancel the whole instinct — root run() plus every coroutine it spawned
+        # (gather children unwind via the root's cancellation) — so a hot-swap
+        # never leaves the previous generation's loops running.
+        tasks = [t for t in ([self._instinct_task] + self._body_tasks)
+                 if t is not None and not t.done()]
+        for t in tasks:
             t.cancel()
+        for t in tasks:
             try:
                 await t
             except (asyncio.CancelledError, Exception):
                 pass
         self._instinct_task = None
+        self._body_tasks = []
 
     # ── Reflection scheduling ─────────────────────────────────────────
 
     async def _maybe_reflect(self) -> None:
         if self.loop.needs_reflection():
-            if self.virtual:
-                # Open a virtual-time budget: the body may dance reflection_time
-                # of virtual time before it blocks waiting for this reflection.
+            if self.budgeted:
+                # Open a fresh budget: the body dances reflection_time, then the
+                # clock freezes at the deadline.
                 self._reflect_deadline = self.clock.now_ms + self.reflection_time_ms
-                self._reflect_done.clear()
-            await self.loop.reflect()
-            if self.virtual:
+                self._deadline_reached = asyncio.Event()
+                self._reflect_release = asyncio.Event()
+            await self.loop.reflect()        # LLM + (maybe) _deploy, gated on the deadline
+            if self.budgeted:
+                # The reflection cost the creature exactly reflection_time: wait
+                # for the body to reach the budget deadline (it freezes there),
+                # then clear it, unfreeze the clock, and release the body. Done
+                # here (not in _deploy) so reflections that change nothing still
+                # unfreeze.
+                await self._deadline_reached.wait()
                 self._reflect_deadline = None
-                self._reflect_done.set()     # unblock the body; new instinct is live
+                self.clock.unfreeze()
+                self._reflect_release.set()
             if self.loop.needs_reflection() and not self._stopping:
                 # Re-fire if new messages/crash arrived during reflection.
                 asyncio.create_task(self._maybe_reflect())
@@ -280,29 +336,30 @@ class SimSpine:
         self._start_instinct_task(self.loop.current_instinct)
         self._log(f"started instinct v{self.loop.instinct_version}", "dim")
 
-        if self.virtual:
-            # Virtual clock: the body generates the dance fast and blocks only on
-            # the reflection budget; it raises StopSimulation at the duration cap,
-            # which wrapped() turns into _stop_event. Just wait for that.
-            await self._stop_event.wait()
-        else:
-            # Real-time clock: stop at the wall-clock deadline.
-            deadline = time.monotonic() + self.duration_ms / 1000.0
-            warned_exhausted = False
-            while not self._stop_event.is_set():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                if (not warned_exhausted) and self.clock.now_ms > self.imu_source.duration_ms:
-                    self._log("IMU source exhausted — holding last sample", "dim")
-                    warned_exhausted = True
-                try:
-                    await asyncio.wait_for(self._stop_event.wait(), timeout=min(remaining, 0.5))
-                except asyncio.TimeoutError:
-                    pass
+        # Stop when the creature has experienced the full clip. Creature-time
+        # excludes reflection freezes, so a budgeted run takes longer in wall
+        # time but the creature still dances exactly duration_ms of its timeline.
+        warned_exhausted = False
+        while not self._stop_event.is_set():
+            if self.clock.now_ms >= self.duration_ms:
+                break
+            if (not warned_exhausted) and self.clock.now_ms > self.imu_source.duration_ms:
+                self._log("IMU source exhausted — holding last sample", "dim")
+                warned_exhausted = True
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=0.2)
+            except asyncio.TimeoutError:
+                pass
 
         self._log("stopping sim", "dim")
         self._stopping = True
+        if self.budgeted:
+            # The body is about to stop, so nothing is left to play the budget or
+            # hit the deadline — release any reflection waiting on it and thaw the
+            # clock so the final drain reflection can't deadlock.
+            self._deadline_reached.set()
+            self._reflect_release.set()
+            self.clock.unfreeze()
         await self._stop_instinct_task()
         # An in-flight reflection was already paid for — let it finish and save
         # rather than discarding it at the deadline (bounded wait).
@@ -385,10 +442,12 @@ def main():
     print(f"llm:      {llm_info.get('llm') or (llm_info.get('api') + '/' + llm_info.get('model', ''))}", file=sys.stderr)
     print(f"duration: {(duration_ms or sim_source.duration_ms)/1000.0:.2f}s", file=sys.stderr)
     if args.reflection_time is not None:
-        print(f"clock:    virtual · reflection_time={args.reflection_time:.2f}s "
-              f"(wall time still waits for each real LLM call)", file=sys.stderr)
+        print(f"clock:    real-time, budgeted · each reflection costs the creature "
+              f"{args.reflection_time:.2f}s (body plays that, then freezes for a "
+              f"slow LLM)", file=sys.stderr)
     else:
-        print("clock:    real-time (reflection length = real LLM latency)", file=sys.stderr)
+        print("clock:    real-time (no freeze; body dances on through reflection)",
+              file=sys.stderr)
 
     sim = SimSpine(creature, llm, llm_info,
                    imu_path=imu_path, duration_ms=duration_ms, resume=args.resume,

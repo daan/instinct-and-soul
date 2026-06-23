@@ -16,46 +16,28 @@ from .fake_speaker import _CapturingSpeaker
 from .fake_synth import _CapturingSynth
 from .fake_mem import _Mem
 from .fake_m5 import _M5
+from .virtual_clock import VirtualScheduler, VAsyncio, StopSimulation  # noqa: F401
 
 
-class StopSimulation(Exception):
-    """Raised by the patched sleep_ms when the virtual clock would exceed --duration."""
+def _patch_time(clock: Clock):
+    """Monkey-patch MicroPython-only time.ticks_* onto the real time module.
 
-
-def _make_sleep_ms(clock: Clock, duration_ms: float):
-    async def sleep_ms(n):
-        # If advancing would push past the duration cap, finish at the cap
-        # and unwind via StopSimulation so the driver can clean up cleanly.
-        n = float(n)
-        if clock.now_ms + n > duration_ms:
-            clock.advance(max(0.0, duration_ms - clock.now_ms))
-            raise StopSimulation()
-        clock.advance(n)
-        # Yield once so asyncio.create_task(...) tasks (if any) get a turn.
-        await asyncio.sleep(0)
-    return sleep_ms
-
-
-def _patch_modules(clock: Clock, duration_ms: float):
-    """Monkey-patch uasyncio-only and time.ticks_* into the real stdlib modules.
-
-    These functions don't exist on CPython; adding them doesn't shadow anything.
-    Lifetime of the patches is the lifetime of this CLI process — fine for a
-    one-shot runner.
+    These don't exist on CPython; adding them shadows nothing. (sleep_ms /
+    create_task are provided to the instinct via the per-run asyncio shim, not
+    by patching the module, so concurrent runs don't stomp each other.)
     """
-    asyncio.sleep_ms = _make_sleep_ms(clock, duration_ms)
     time.ticks_ms   = lambda: int(clock.now_ms)
     time.ticks_diff = lambda a, b: int(a) - int(b)
     time.ticks_add  = lambda a, b: int(a) + int(b)
-    time.sleep_ms   = lambda n: clock.advance(float(n))  # synchronous variant
+    time.sleep_ms   = lambda n: clock.advance(float(n))  # synchronous legacy
 
 
-def _build_scope(*, send, imu, speaker, synth, mem, m5):
+def _build_scope(*, send, aio, imu, speaker, synth, mem, m5):
     return {
         "__name__":   "__instinct__",
         "__builtins__": __builtins__,
         "send":       send,
-        "asyncio":    asyncio,
+        "asyncio":    aio,
         "time":       time,
         "math":       math,
         "struct":     struct,
@@ -102,9 +84,11 @@ def run_sim(
     def captured_send(msg):
         sent_log.write(json.dumps({"t": clock.now_ms, "content": str(msg)}) + "\n")
 
-    _patch_modules(clock, duration_ms)
+    sched = VirtualScheduler(clock, duration_ms)
+    _patch_time(clock)
 
-    scope = _build_scope(send=captured_send, imu=imu, speaker=speaker, synth=synth, mem=mem, m5=m5)
+    scope = _build_scope(send=captured_send, aio=VAsyncio(sched),
+                         imu=imu, speaker=speaker, synth=synth, mem=mem, m5=m5)
 
     try:
         exec(compile(instinct_code, "<instinct>", "exec"), scope)
@@ -122,28 +106,19 @@ def run_sim(
     instinct_run = scope["run"]
 
     crash_path = None
-
-    async def driver():
-        nonlocal crash_path
-        try:
-            await instinct_run()
-        except StopSimulation:
-            pass
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            crash_path = os.path.join(output_dir, "crash.txt")
-            with open(crash_path, "w") as f:
-                traceback.print_exc(file=f)
-
     try:
-        asyncio.run(driver())
+        asyncio.run(sched.run(instinct_run))
     finally:
         sent_log.close()
         imu.close()
         speaker.close()
         synth.close()
         m5.close()
+
+    if sched.crashes:
+        crash_path = os.path.join(output_dir, "crash.txt")
+        with open(crash_path, "w") as f:
+            f.write("\n\n".join(sched.crashes))
 
     # Session provenance: caller-supplied context + runtime-derived fields.
     meta_out = dict(meta or {})
