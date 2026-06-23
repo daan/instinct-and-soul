@@ -9,6 +9,7 @@ environment-specific bits:
 
 Also exports Creature and VersionStore (moved from spine.py for reuse).
 """
+import asyncio
 import glob
 import json
 import os
@@ -18,8 +19,17 @@ import tomllib
 from typing import Awaitable, Callable, Optional
 
 from .creature_sim.devices import DEFAULT_DEVICE
-from .llm import compute_cost
+from .llm import LLM_HARD_TIMEOUT_S, LLM_MAX_TOKENS, compute_cost
 from .message_buffer import MessageBuffer
+
+
+def _is_truncated(stop_reason) -> bool:
+    """True if the provider cut the reply at the token cap (anthropic
+    'max_tokens', openai 'length', gemini 'MAX_TOKENS')."""
+    if stop_reason is None:
+        return False
+    s = str(stop_reason).lower()
+    return "max_tokens" in s or s == "length"
 
 
 # ── Creature loading ──────────────────────────────────────────────────────
@@ -342,9 +352,22 @@ class ReflectionLoop:
         self._on_log("reflecting ({} messages)...".format(len(messages)), "dim")
 
         try:
-            result = await self.llm.call(self.creature.system_prompt, reflection_prompt)
+            # Hard backstop: even with the SDK's own per-attempt timeout+retries,
+            # a stuck connection has been seen to hang for many minutes. wait_for
+            # guarantees the reflection fails (and the run continues) instead of
+            # freezing the creature forever mid-reflection.
+            result = await asyncio.wait_for(
+                self.llm.call(self.creature.system_prompt, reflection_prompt),
+                timeout=LLM_HARD_TIMEOUT_S)
             reply = result["text"]
             usage = result["usage"]
+            stop_reason = result.get("stop_reason")
+            truncated = _is_truncated(stop_reason)
+            if truncated:
+                self._on_log(
+                    "soul: reply TRUNCATED at the {}-token cap (stop_reason={}) — "
+                    "instinct/experience likely incomplete; instinct may not deploy"
+                    .format(LLM_MAX_TOKENS, stop_reason), "bold red")
 
             self.session_usage["reflections"] += 1
             self.session_usage["input_tokens_total"] += usage["input_tokens"]
@@ -390,6 +413,8 @@ class ReflectionLoop:
                 "instinct_version_in": self.instinct_version,
                 "crashed": crashed,
                 "intent": intent,
+                "stop_reason": stop_reason,
+                "truncated": truncated,
                 "instinct_changed": new_instinct is not None,
                 "experience_changed": new_experience is not None,
                 "usage": usage,
@@ -429,6 +454,12 @@ class ReflectionLoop:
             self.store.save_reflection(seq, reflection)
 
         except Exception as e:
+            # Many failure modes stringify to "" (asyncio.TimeoutError, some
+            # Gemini safety blocks) — record the type so "failed" is diagnosable.
+            detail = str(e) or repr(e)
+            if isinstance(e, asyncio.TimeoutError):
+                detail = "LLM call timed out after {:.0f}s".format(LLM_HARD_TIMEOUT_S)
+            error_msg = "{}: {}".format(type(e).__name__, detail)
             fseq = self.store.next_seq()
             self.store.save_reflection(fseq, {
                 "seq": fseq,
@@ -438,9 +469,9 @@ class ReflectionLoop:
                 "instinct_version_in": self.instinct_version,
                 "crashed": crashed,
                 "prompt": reflection_prompt,
-                "error": str(e),
+                "error": error_msg,
                 "failed": True,
             })
-            self._on_log("reflection error: {}".format(e), "bold red")
+            self._on_log("reflection error: {}".format(error_msg), "bold red")
         finally:
             self._set_reflecting(False)

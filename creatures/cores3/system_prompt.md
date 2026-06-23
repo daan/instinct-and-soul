@@ -66,8 +66,8 @@ You must respond in this format:
 
 <response>
   <intent>one or two sentences: what you noticed and what you decided, in your own voice</intent>
-  <experience>your full updated experience.md, only if you want to change it</experience>
   <instinct>your full updated instinct.py, only if you want to change it</instinct>
+  <experience>your full updated experience.md, only if you want to change it</experience>
 </response>
 
 The intent is required. Experience and instinct are optional — omit them to leave the current versions unchanged.

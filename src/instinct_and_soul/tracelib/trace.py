@@ -245,6 +245,12 @@ def _resolve_clip_view(source, repo_root):
         cand = os.path.join(repo_root, "data", "mocap", stem, "skeleton_view.json")
         if os.path.isfile(cand):
             return os.path.relpath(cand, repo_root)
+    # A file inside a clip directory (e.g. an imu_<wrist|hips>.jsonl passed via
+    # --imu): use the skeleton that sits beside it.
+    for name in ("skeleton_view.json", "skeleton.json"):
+        cand = os.path.join(os.path.dirname(p), name)
+        if os.path.isfile(cand):
+            return os.path.relpath(cand, repo_root)
     return None
 
 

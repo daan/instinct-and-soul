@@ -66,10 +66,16 @@ def render(midi_path, wav_path, gain: float = 0.6, sample_rate: int = 44100) -> 
     sf = find_soundfont()
     wav_path = Path(wav_path)
     wav_path.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [exe, "-ni", "-g", str(gain), "-r", str(sample_rate),
-         "-F", str(wav_path), sf, str(midi_path)],
-        check=True, capture_output=True)
+    try:
+        subprocess.run(
+            [exe, "-ni", "-g", str(gain), "-r", str(sample_rate),
+             "-F", str(wav_path), sf, str(midi_path)],
+            check=True, capture_output=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        # Some soundfont/MIDI combinations send the offline renderer into a
+        # multi-hour run. Cap it and don't leave a giant partial wav behind.
+        wav_path.unlink(missing_ok=True)
+        raise
     return wav_path
 
 

@@ -43,13 +43,18 @@ class RealtimeClock:
         self._start = time.monotonic()
         self._frozen_total = 0.0       # seconds of creature-time skipped
         self._frozen_since = None      # monotonic when the current freeze began
+        self.cap_ms = None             # hard ceiling on creature-time (clip end)
 
     @property
     def now_ms(self) -> float:
         frozen = self._frozen_total
         if self._frozen_since is not None:
             frozen += time.monotonic() - self._frozen_since
-        return (time.monotonic() - self._start - frozen) * 1000.0
+        t = (time.monotonic() - self._start - frozen) * 1000.0
+        # Creature-time can never run past the end of the clip. Once the body has
+        # danced the full duration the clock pins here, so a slow final reflection
+        # draining during shutdown is stamped at the clip end, not minutes later.
+        return t if self.cap_ms is None else min(t, self.cap_ms)
 
     @property
     def frozen(self) -> bool:
@@ -149,6 +154,7 @@ class SimSpine:
         # reflections just fire as the instinct sends and deploy when the LLM
         # returns (the body keeps dancing meanwhile).
         self.clock = RealtimeClock()
+        self.clock.cap_ms = self.duration_ms     # never tick past the clip end
         self.budgeted = reflection_time is not None
         self.reflection_time = reflection_time
         self.reflection_time_ms = None if reflection_time is None else reflection_time * 1000.0
@@ -437,6 +443,9 @@ def main():
               f"→ {imu_path}", file=sys.stderr)
     else:
         imu_path = args.imu
+        # Record the stream as the run's source so the tracer can find a skeleton
+        # beside it (e.g. an imu_<wrist|hips>.jsonl inside a clip dir).
+        source = imu_path
 
     sim_source = load_imu_source(imu_path)
     source_s = sim_source.duration_ms / 1000.0

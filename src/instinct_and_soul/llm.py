@@ -29,6 +29,19 @@ import openai
 
 from . import _config
 
+# Per-request cap (seconds) and automatic retry count for every provider. A
+# stuck connection must never stall the sim indefinitely — see reflection.py,
+# which also wraps each call in asyncio.wait_for as a hard backstop.
+LLM_TIMEOUT_S = 120.0          # per-attempt request cap
+LLM_MAX_RETRIES = 3            # SDK auto-retries (transient 429/5xx/timeout)
+LLM_HARD_TIMEOUT_S = 300.0     # asyncio backstop over the whole call + retries
+
+# A full reflection emits intent + experience + a complete instinct.py. A rich
+# instinct alone runs ~8K tokens; at the old 4096 cap the <instinct> block (last
+# in the format) was silently truncated mid-code, the closing tag never arrived,
+# and the spine kept the old instinct — a death spiral as each retry grew longer.
+LLM_MAX_TOKENS = 16384
+
 
 # ── Pricing ────────────────────────────────────────────────────────────────
 
@@ -77,8 +90,12 @@ class LLMClient(ABC):
     @abstractmethod
     async def call(self, system_prompt, user_message):
         """Send a single-turn (system + user) request. Returns:
-            {"text": str, "usage": {input_tokens, cache_read_input_tokens,
-                                    cache_creation_input_tokens, output_tokens}}
+            {"text": str,
+             "stop_reason": str | None,   # provider's finish reason; a truncation
+                                          # value (max_tokens/length/MAX_TOKENS)
+                                          # means the reply was cut at the cap
+             "usage": {input_tokens, cache_read_input_tokens,
+                       cache_creation_input_tokens, output_tokens}}
         """
 
 
@@ -88,13 +105,17 @@ class AnthropicClient(LLMClient):
     def __init__(self, model, api_key=None):
         self.model = model
         # api_key=None lets the SDK read ANTHROPIC_API_KEY from env.
-        self.client = anthropic.AsyncAnthropic(api_key=api_key) if api_key \
-            else anthropic.AsyncAnthropic()
+        # timeout/max_retries: a single stuck connection must not stall the whole
+        # sim — cap each request and let the SDK retry transient 429/5xx/timeouts.
+        kwargs = {"timeout": LLM_TIMEOUT_S, "max_retries": LLM_MAX_RETRIES}
+        if api_key:
+            kwargs["api_key"] = api_key
+        self.client = anthropic.AsyncAnthropic(**kwargs)
 
     async def call(self, system_prompt, user_message):
         response = await self.client.messages.create(
             model=self.model,
-            max_tokens=4096,
+            max_tokens=LLM_MAX_TOKENS,
             system=[{
                 "type": "text",
                 "text": system_prompt,
@@ -105,6 +126,8 @@ class AnthropicClient(LLMClient):
         )
         return {
             "text": response.content[0].text,
+            # "max_tokens" here means the reply was truncated at the cap.
+            "stop_reason": response.stop_reason,
             "usage": {
                 "input_tokens": response.usage.input_tokens,
                 "cache_read_input_tokens": getattr(response.usage, "cache_read_input_tokens", 0) or 0,
@@ -119,7 +142,7 @@ class OpenAIClient(LLMClient):
 
     def __init__(self, model, api_key=None, base_url=None):
         self.model = model
-        kwargs = {}
+        kwargs = {"timeout": LLM_TIMEOUT_S, "max_retries": LLM_MAX_RETRIES}
         if api_key:
             kwargs["api_key"] = api_key
         if base_url:
@@ -131,7 +154,7 @@ class OpenAIClient(LLMClient):
         # that burn output tokens on hidden thinking before the visible reply.
         response = await self.client.chat.completions.create(
             model=self.model,
-            max_tokens=16384,
+            max_tokens=LLM_MAX_TOKENS,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -140,6 +163,8 @@ class OpenAIClient(LLMClient):
         usage = response.usage
         return {
             "text": response.choices[0].message.content,
+            # "length" here means the reply was truncated at the cap.
+            "stop_reason": response.choices[0].finish_reason,
             "usage": {
                 "input_tokens": usage.prompt_tokens if usage else 0,
                 # OpenAI-compatible endpoints don't expose prompt caching.
@@ -168,12 +193,16 @@ class GeminiClient(LLMClient):
     api = "google"
 
     def __init__(self, model, api_key=None, thinking_budget=None,
-                 temperature=None, max_output_tokens=16384):
+                 temperature=None, max_output_tokens=LLM_MAX_TOKENS):
         from google import genai  # lazy: only imported when Gemini is selected
+        from google.genai import types
         api_key = (api_key or os.environ.get("GEMINI_API_KEY")
                    or os.environ.get("GOOGLE_API_KEY"))
         self.model = model
-        self.client = genai.Client(api_key=api_key)
+        # http timeout is in milliseconds for google-genai; cap a stuck request.
+        self.client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(timeout=int(LLM_TIMEOUT_S * 1000)))
         self.thinking_budget = thinking_budget
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
@@ -205,6 +234,8 @@ class GeminiClient(LLMClient):
         candidates = getattr(um, "candidates_token_count", 0) or 0
         return {
             "text": _gemini_text(response),
+            # "MAX_TOKENS" here means the reply was truncated at the cap.
+            "stop_reason": _gemini_finish_reason(response),
             "usage": {
                 # Gemini's prompt_token_count includes the cached prefix; split it
                 # out so cost matches the Anthropic-style fresh/cached pricing.
@@ -223,6 +254,14 @@ def _gemini_text(response) -> str:
         return response.text or ""
     except Exception:
         return ""
+
+
+def _gemini_finish_reason(response):
+    # e.g. "STOP" (normal), "MAX_TOKENS" (truncated), "SAFETY" (blocked).
+    try:
+        return str(response.candidates[0].finish_reason)
+    except Exception:
+        return None
 
 
 # ── Config loading ─────────────────────────────────────────────────────────
