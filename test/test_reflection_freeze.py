@@ -24,6 +24,8 @@ NEW_INSTINCT = """async def run():
     while True:
         Imu.getAccel()
         n += 1
+        if n % 3 == 0:
+            Synth.note(0, 60, 50)        # play, so we can detect recovery
         if n % 6 == 0:
             send("v tick %d" % n)
         await asyncio.sleep_ms(33)
@@ -62,7 +64,25 @@ async def run():
             Imu.getAccel(); send("b %d" % n)
         await asyncio.sleep_ms(0)
 """,
+    "crash": """async def run():
+    n = 0
+    while True:
+        Imu.getAccel(); n += 1
+        if n == 4:                   # crash early — before any reflection swaps it
+            boom = undefined_name_xyz
+        if n % 6 == 0: send("c %d" % n)
+        await asyncio.sleep_ms(33)
+""",
 }
+
+
+def _last_midi_ms(sess):
+    import os as _os
+    p = _os.path.join(sess, "output", "midi_events.jsonl")
+    if not _os.path.isfile(p):
+        return 0.0
+    ev = [json.loads(l) for l in open(p) if l.strip() and '"note"' in l]
+    return ev[-1]["t"] if ev else 0.0
 
 
 class FakeLLM:
@@ -117,7 +137,8 @@ def run_case(seed, latency, *, duration_ms=1500.0, reflection_time=0.3, wall_tim
         # creature-time the run reached (from sim_meta + the last imu read)
         reads = open(os.path.join(sess, "input", "imu_reads.jsonl")).read().strip().split("\n")
         last_ct = json.loads(reads[-1])["t"] if reads and reads[0] else 0.0
-        return {"wall": wall, "reflections": refls, "crashes": crashes, "creature_ms": last_ct}
+        return {"wall": wall, "reflections": refls, "crashes": crashes,
+                "creature_ms": last_ct, "last_midi_ms": _last_midi_ms(sess)}
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -146,6 +167,18 @@ def main():
         print(f"  {seed}: {r}")
         assert r["creature_ms"] >= 1400, f"{seed} didn't reach duration"
         assert r["crashes"] == 0, f"{seed} crashed"
+
+    print("=== crash recovery: a crashed instinct recovers promptly and plays ===")
+    r = run_case("crash", 0.05, wall_timeout=20.0)
+    print(f"  crash: {r}")
+    # The crash seed plays no notes and dies at ~130 ms (before its first send),
+    # so ANY notes mean the soul redeployed a working instinct and it ran. The
+    # recovery must play well past the crash and to ~duration — proving the
+    # deploy didn't stall waiting on a dead body for the budget deadline.
+    assert r["creature_ms"] >= 1400, "crash run didn't reach duration"
+    assert r["last_midi_ms"] >= 1200, \
+        f"recovery never played after the crash (deploy stalled?): {r['last_midi_ms']}"
+    assert r["wall"] < 6.0, f"recovery stalled (wall {r['wall']:.1f}s for a 1.5 s clip)"
 
     print("\nALL ASSERTIONS PASSED ✓")
 

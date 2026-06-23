@@ -494,15 +494,14 @@ def process_bvh(bvh_path: Path, out_dir: Path | None = None, *, view_stride: int
 
     bvh_path = Path(bvh_path)
     clip = B.load(str(bvh_path))
-    motion = clip.motion
     fps = clip.fps
-    print(f"Loaded {bvh_path.name}: T={len(motion)}, fps={fps:.1f}, "
+    print(f"Loaded {bvh_path.name}: T={clip.n_frames}, fps={fps:.1f}, "
           f"{len(clip.joints)} joints")
 
     scale = B.meters_per_unit(clip, height_m)
     print(f"  scale: {scale:.4f} m/unit (rest-pose height {height_m} m)")
 
-    pos_yup, rot_yup = B.forward_kinematics(clip, motion)
+    pos_yup, rot_yup = B.forward_kinematics(clip)
 
     # watch sensors before any reframing (mount is defined in BVH rest pose)
     imus = {}

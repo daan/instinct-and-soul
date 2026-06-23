@@ -1,20 +1,24 @@
 """BVH input for the mocap factory.
 
-Parses a BVH file (e.g. the stitched salsa loops produced by the bvh-stitch
-repo, or any CMU-style clip), runs forward kinematics, and derives the two
+Parses a BVH file (stitched salsa loops from bvh-stitch, CMU-style clips, the
+Motorica dance dataset, …), runs forward kinematics, and derives the two
 watch-sensor frames that feed `extract.synthesize_imu`.
 
-Conventions baked in here:
-- The virtual sensor is a *watch*: positioned at 85 % of the way from elbow
-  to wrist and rigidly attached to the FOREARM bone — not the hand, so wrist
-  flexion never contaminates the synthesized signal (a real watch doesn't
-  rotate when the hand waves).
-- Sensor axes are fixed in the skeleton's rest pose (T-pose, arms
-  horizontal): X along the forearm (elbow→wrist), Z out of the watch face
-  (rest-pose up), Y completing the right-handed frame.
-- BVH files are Y-up in arbitrary units; `scale_to_meters` converts using
-  the dancer's rest-pose height, and `to_z_up` rotates into the Z-up world
-  the rest of mocaplib (and the skeleton viewer) expects.
+The parsing is delegated to the maintained `bvhio` library — the hand-rolled
+reader this replaced broke (IndexError) on some Motorica hierarchies. We take
+`bvhio`'s per-joint *local* rotation keyframes and run the same validated
+vectorized FK, scale, and watch-mount the original pipeline used, so the IMU
+signal is unchanged for clips both readers handled.
+
+Conventions:
+- The virtual sensor is a *watch*: 85 % of the way from elbow to wrist, rigidly
+  attached to the FOREARM bone — not the hand, so wrist flexion doesn't
+  contaminate the signal (a real watch doesn't rotate when the hand waves).
+- Sensor axes are fixed in the rest pose: X along the forearm (elbow→wrist),
+  Z out of the watch face (rest-pose up), Y completing the right-handed frame.
+- BVH is Y-up in arbitrary units; `meters_per_unit` scales by the dancer's
+  rest-pose height and `to_z_up` rotates into the Z-up world the rest of
+  mocaplib (and the skeleton viewer) expects.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+import bvhio
 
 WATCH_ATTACH = 0.85  # along elbow -> wrist
 
@@ -37,21 +42,24 @@ CHAIN_CANDIDATES = {
 @dataclass
 class BvhJoint:
     name: str
-    parent: int  # -1 for root
-    offset: np.ndarray  # (3,) rest offset from parent
-    channels: list[str]  # [] for End Sites
-    channel_index: int
+    parent: int          # -1 for root
+    offset: np.ndarray   # (3,) rest offset from parent
 
 
 @dataclass
 class Bvh:
     joints: list[BvhJoint]
-    motion: np.ndarray  # (frames, channels), rotations in degrees
+    rot_local: np.ndarray   # (T, J, 3, 3) per-frame local rotation matrices
+    trans: np.ndarray       # (T, 3) root translation per frame
     frame_time: float
 
     @property
     def fps(self) -> float:
         return 1.0 / self.frame_time
+
+    @property
+    def n_frames(self) -> int:
+        return self.rot_local.shape[0]
 
     def joint_index(self, name: str) -> int:
         for i, j in enumerate(self.joints):
@@ -60,96 +68,80 @@ class Bvh:
         raise KeyError(name)
 
 
+def _quat_to_matrix(q: np.ndarray) -> np.ndarray:
+    """(..., 4) xyzw quaternions -> (..., 3, 3) rotation matrices."""
+    q = q / np.linalg.norm(q, axis=-1, keepdims=True)
+    x, y, z, w = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
+    R = np.empty(q.shape[:-1] + (3, 3))
+    R[..., 0, 0] = 1 - 2 * (y * y + z * z)
+    R[..., 0, 1] = 2 * (x * y - z * w)
+    R[..., 0, 2] = 2 * (x * z + y * w)
+    R[..., 1, 0] = 2 * (x * y + z * w)
+    R[..., 1, 1] = 1 - 2 * (x * x + z * z)
+    R[..., 1, 2] = 2 * (y * z - x * w)
+    R[..., 2, 0] = 2 * (x * z - y * w)
+    R[..., 2, 1] = 2 * (y * z + x * w)
+    R[..., 2, 2] = 1 - 2 * (x * x + y * y)
+    return R
+
+
+def _flatten(root):
+    """Depth-first joint list: (joints, nodes) parallel to each other."""
+    joints, nodes = [], []
+
+    def walk(node, parent):
+        idx = len(joints)
+        joints.append(BvhJoint(node.Name, parent,
+                               np.array([node.Offset.x, node.Offset.y, node.Offset.z], float)))
+        nodes.append(node)
+        for c in node.Children:
+            walk(c, idx)
+
+    walk(root, -1)
+    return joints, nodes
+
+
 def load(path: str) -> Bvh:
-    """Parse a BVH file (handles CRLF, End Sites, any channel layout)."""
-    with open(path, "r") as f:
-        lines = [ln.strip() for ln in f.read().replace("\r", "").split("\n")]
+    """Parse a BVH via `bvhio` into local rotations + root translation."""
+    bvh = bvhio.readAsBvh(str(path))
+    joints, nodes = _flatten(bvh.Root)
+    T = max(len(n.Keyframes) for n in nodes)
 
-    joints: list[BvhJoint] = []
-    stack: list[int] = []
-    channel_count = 0
-    n_frames = 0
-    frame_time = 1 / 120
-    motion_start = None
+    rot_local = np.broadcast_to(np.eye(3), (T, len(nodes), 3, 3)).copy()
+    for j, node in enumerate(nodes):
+        kf = node.Keyframes
+        if len(kf) == T:
+            q = np.array([(p.Rotation.x, p.Rotation.y, p.Rotation.z, p.Rotation.w)
+                          for p in kf], float)
+            rot_local[:, j] = _quat_to_matrix(q)
+        # end sites / static joints keep identity rotation
 
-    for i, ln in enumerate(lines):
-        if ln.startswith(("ROOT", "JOINT")):
-            joints.append(BvhJoint(ln.split()[1], stack[-1] if stack else -1,
-                                   np.zeros(3), [], channel_count))
-            stack.append(len(joints) - 1)
-        elif ln.startswith("End Site"):
-            joints.append(BvhJoint(joints[stack[-1]].name + "_end",
-                                   stack[-1], np.zeros(3), [], channel_count))
-            stack.append(len(joints) - 1)
-        elif ln.startswith("OFFSET"):
-            joints[stack[-1]].offset = np.array([float(x) for x in ln.split()[1:4]])
-        elif ln.startswith("CHANNELS"):
-            parts = ln.split()
-            joints[stack[-1]].channels = parts[2:2 + int(parts[1])]
-            joints[stack[-1]].channel_index = channel_count
-            channel_count += int(parts[1])
-        elif ln.startswith("}"):
-            stack.pop()
-        elif ln.startswith("Frames:"):
-            n_frames = int(ln.split()[-1])
-        elif ln.startswith("Frame Time:"):
-            frame_time = float(ln.split()[-1])
-            motion_start = i + 1
-            break
-
-    motion = np.array("\n".join(lines[motion_start:]).split(), dtype=np.float64)
-    motion = motion[: n_frames * channel_count].reshape(n_frames, channel_count)
-    return Bvh(joints, motion, frame_time)
-
-
-def _axis_rot(angles_rad: np.ndarray, axis: str) -> np.ndarray:
-    """(n,) angles -> (n,3,3) rotations about a principal axis."""
-    n = angles_rad.shape[0]
-    c, s = np.cos(angles_rad), np.sin(angles_rad)
-    m = np.zeros((n, 3, 3))
-    if axis == "X":
-        m[:, 0, 0] = 1
-        m[:, 1, 1], m[:, 1, 2] = c, -s
-        m[:, 2, 1], m[:, 2, 2] = s, c
-    elif axis == "Y":
-        m[:, 1, 1] = 1
-        m[:, 0, 0], m[:, 0, 2] = c, s
-        m[:, 2, 0], m[:, 2, 2] = -s, c
-    else:
-        m[:, 2, 2] = 1
-        m[:, 0, 0], m[:, 0, 1] = c, -s
-        m[:, 1, 0], m[:, 1, 1] = s, c
-    return m
+    trans = np.array([(p.Position.x, p.Position.y, p.Position.z)
+                      for p in bvh.Root.Keyframes], float)
+    return Bvh(joints, rot_local, trans, float(bvh.FrameTime))
 
 
 def forward_kinematics(bvh: Bvh, motion: np.ndarray | None = None
                        ) -> tuple[np.ndarray, np.ndarray]:
-    """World positions (T,J,3) and rotations (T,J,3,3), BVH Y-up world/units."""
-    motion = bvh.motion if motion is None else motion
-    n, nj = motion.shape[0], len(bvh.joints)
-    pos = np.zeros((n, nj, 3))
-    rot = np.zeros((n, nj, 3, 3))
+    """World positions (T,J,3) and rotations (T,J,3,3), BVH Y-up world/units.
 
-    for ji, j in enumerate(bvh.joints):
-        if not j.channels:  # end site: rigid extension of the parent
-            rot[:, ji] = rot[:, j.parent]
-            pos[:, ji] = pos[:, j.parent] + np.einsum(
-                "nab,b->na", rot[:, j.parent], j.offset)
-            continue
-        rot_channels = [c for c in j.channels if c.endswith("rotation")]
-        rot_start = j.channel_index + len(j.channels) - len(rot_channels)
-        rad = np.radians(motion[:, rot_start:rot_start + len(rot_channels)])
-        local = _axis_rot(rad[:, 0], rot_channels[0][0])
-        for k in range(1, len(rot_channels)):
-            local = local @ _axis_rot(rad[:, k], rot_channels[k][0])
-        if j.parent < 0:
-            rot[:, ji] = local
-            pos[:, ji] = motion[:, j.channel_index:j.channel_index + 3]
-        else:
-            rot[:, ji] = rot[:, j.parent] @ local
-            pos[:, ji] = pos[:, j.parent] + np.einsum(
-                "nab,b->na", rot[:, j.parent], j.offset)
-    return pos, rot
+    `motion` is accepted for signature compatibility but ignored — the per-frame
+    local rotations now come from the parsed keyframes on `bvh`.
+    """
+    R_local = bvh.rot_local
+    T, J = R_local.shape[:2]
+    offsets = np.array([j.offset for j in bvh.joints])
+    parents = [j.parent for j in bvh.joints]
+
+    R_world = np.empty_like(R_local)
+    pos = np.zeros((T, J, 3))
+    R_world[:, 0] = R_local[:, 0]
+    pos[:, 0] = bvh.trans
+    for j in range(1, J):
+        p = parents[j]
+        R_world[:, j] = R_world[:, p] @ R_local[:, j]
+        pos[:, j] = pos[:, p] + np.einsum("tij,j->ti", R_world[:, p], offsets[j])
+    return pos, R_world
 
 
 def rest_positions(bvh: Bvh) -> np.ndarray:

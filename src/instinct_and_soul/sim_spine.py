@@ -343,11 +343,20 @@ class SimSpine:
         while not self._stop_event.is_set():
             if self.clock.now_ms >= self.duration_ms:
                 break
+            # Backup deadline-detector: normally the body freezes itself at the
+            # budget deadline, but if the instinct has crashed there is no body
+            # left to do it — so the pending deploy would never fire. Detect it
+            # here (the run loop always lives) so a crashed creature still
+            # recovers promptly.
+            if (self.budgeted and self._reflect_deadline is not None
+                    and self.clock.now_ms >= self._reflect_deadline):
+                self.clock.freeze()
+                self._deadline_reached.set()
             if (not warned_exhausted) and self.clock.now_ms > self.imu_source.duration_ms:
                 self._log("IMU source exhausted — holding last sample", "dim")
                 warned_exhausted = True
             try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=0.2)
+                await asyncio.wait_for(self._stop_event.wait(), timeout=0.05)
             except asyncio.TimeoutError:
                 pass
 

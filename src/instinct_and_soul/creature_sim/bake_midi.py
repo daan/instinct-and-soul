@@ -144,6 +144,12 @@ def events_to_midi(events_path, tpb: int = TPB, bpm: float = BPM) -> tuple[MidiF
         last = tk
         if msg.type == "note_on" and msg.velocity > 0:
             notes += 1
+    # Hard stop: a crash or hot-swap can leave a note_on with no note_off, and
+    # some soundfont patches sustain/loop forever — which makes the offline
+    # renderer run for *hours*. All Sound Off (CC 120) on every channel at the
+    # end guarantees the render ends at the music's actual length.
+    for ch in range(16):
+        tr.append(Message("control_change", channel=ch, control=120, value=0, time=0))
     return mid, notes
 
 

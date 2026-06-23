@@ -47,6 +47,7 @@ MODEL_PRICES = {
     "gemini-2.5-pro":            (1.25, 10.00),
     "gemini-2.5-flash-lite":     (0.10,  0.40),
     "gemini-2.0-flash":          (0.10,  0.40),
+    "gemini-3.5-flash":          (0.30,  2.50),   # PLACEHOLDER (= 2.5-flash); set real rates
 }
 
 
