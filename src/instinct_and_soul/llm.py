@@ -32,9 +32,14 @@ from . import _config
 # Per-request cap (seconds) and automatic retry count for every provider. A
 # stuck connection must never stall the sim indefinitely — see reflection.py,
 # which also wraps each call in asyncio.wait_for as a hard backstop.
-LLM_TIMEOUT_S = 120.0          # per-attempt request cap
-LLM_MAX_RETRIES = 3            # SDK auto-retries (transient 429/5xx/timeout)
-LLM_HARD_TIMEOUT_S = 300.0     # asyncio backstop over the whole call + retries
+# A full reflection generates intent + a complete instinct + experience. Measured
+# ~60 tok/s, so a near-cap 16K-token reply takes ~270s — the old 120s per-attempt
+# cap sat right on top of real generation times (a 127s reply got cut at 120s,
+# retried, cut again → spurious TimeoutError). The per-attempt cap must clear a
+# full-length generation; the hard backstop still bounds a genuinely stuck call.
+LLM_TIMEOUT_S = 400.0          # per-attempt request cap (clears a full generation)
+LLM_MAX_RETRIES = 2            # SDK auto-retries (transient 429/5xx only — fail fast)
+LLM_HARD_TIMEOUT_S = 600.0     # asyncio backstop over the whole call + retries
 
 # A full reflection emits intent + experience + a complete instinct.py. A rich
 # instinct alone runs ~8K tokens; at the old 4096 cap the <instinct> block (last

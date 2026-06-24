@@ -15,10 +15,35 @@ const KIND_META = {
 
 const traceParam = new URLSearchParams(window.location.search).get("trace");
 const traceUrl = traceParam ? `/${traceParam}/trace.json` : "./sample-trace.json";
-const trace = await fetch(traceUrl).then(r => {
-  if (!r.ok) throw new Error(`fetch ${traceUrl} → ${r.status}`);
-  return r.json();
-});
+
+async function loadTrace(url) {
+  // A re-bake may be in flight (a missing file → 404, or — before atomic
+  // writes — a truncated one → JSON parse error). Retry briefly, and on real
+  // failure paint a message instead of leaving the page silently blank.
+  let lastErr;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      const r = await fetch(url, { cache: "no-store" });
+      if (!r.ok) throw new Error(`${url} → ${r.status}`);
+      return await r.json();        // throws on a partial / invalid file
+    } catch (e) {
+      lastErr = e;
+      await new Promise(res => setTimeout(res, 500));
+    }
+  }
+  throw lastErr;
+}
+
+let trace;
+try {
+  trace = await loadTrace(traceUrl);
+} catch (e) {
+  document.body.innerHTML =
+    `<div style="padding:2rem;font-family:monospace;color:#c33">` +
+    `couldn't load trace: ${e.message}<br>` +
+    `the run may still be baking — refresh in a moment, or re-bake.</div>`;
+  throw e;
+}
 
 // Grow the timeline (CSS) before we measure the SVG, when there's an IMU lane.
 if (trace.stage && trace.stage.imu) document.body.classList.add("has-imu");

@@ -195,6 +195,19 @@ def _repo_root(start: str) -> str:
     return os.path.abspath(start)
 
 
+def write_trace(data: dict, out_path: str, pretty: bool = False) -> None:
+    """Write trace.json atomically: a reader (the live viewer) never sees a
+    half-written file. Without this, refreshing the page mid-bake fetches a
+    truncated JSON, the viewer's load throws, and the page goes blank."""
+    text = json.dumps(data, indent=2 if pretty else None)
+    tmp = out_path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, out_path)   # atomic on POSIX
+
+
 def _read_jsonl(path: str) -> list:
     if not os.path.isfile(path):
         return []

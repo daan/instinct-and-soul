@@ -1,10 +1,9 @@
 """Bake one session directory into a trace.json the tracer frontend can load."""
 import argparse
-import json
 import os
 import sys
 
-from .trace import build_view
+from .trace import build_view, write_trace
 
 
 def main():
@@ -26,10 +25,7 @@ def main():
         return
 
     data = build_view(args.session_path)
-    text = json.dumps(data, indent=2 if args.pretty else None)
-
-    with open(out_path, "w") as f:
-        f.write(text)
+    write_trace(data, out_path, pretty=args.pretty)
     n = len(data["events"])
     stage = " + stage" if data.get("stage") else ""
     print(f"baked {n} events from {data['session_id']}{stage} → {out_path}", file=sys.stderr)

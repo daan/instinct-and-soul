@@ -12,7 +12,7 @@ import sys
 import webbrowser
 from urllib.parse import quote
 
-from .trace import build_view
+from .trace import build_view, write_trace
 
 
 class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
@@ -63,8 +63,7 @@ def bake_if_needed(run_dir: str, repo_root: str, rebake: bool) -> dict:
             return json.load(f)
     print(f"baking {os.path.basename(run_dir)}…", file=sys.stderr)
     data = build_view(run_dir, repo_root)
-    with open(out_path, "w") as f:
-        json.dump(data, f)
+    write_trace(data, out_path)
     stage = " + stage" if data.get("stage") else ""
     print(f"  → {len(data['events'])} events{stage}", file=sys.stderr)
     return data
