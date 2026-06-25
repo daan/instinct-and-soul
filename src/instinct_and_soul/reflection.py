@@ -111,8 +111,22 @@ class VersionStore:
         # timeline timestamps so a sim can put them on its virtual axis.
         self._now = now
         session_id = time.strftime("%Y%m%d_%H%M%S")
-        self.base = os.path.join(logs_dir, session_id)
-        self.session_id = session_id
+        # Atomically claim a unique dir. Parallel runs that start in the same
+        # second would otherwise collide on the second-resolution name; the
+        # first to create the dir wins, the rest bump _1, _2, … This is
+        # race-safe because os.makedirs (without exist_ok) fails if it exists.
+        os.makedirs(logs_dir, exist_ok=True)
+        suffix = 0
+        while True:
+            sid = session_id if suffix == 0 else "{}_{}".format(session_id, suffix)
+            base = os.path.join(logs_dir, sid)
+            try:
+                os.makedirs(base)
+                break
+            except FileExistsError:
+                suffix += 1
+        self.base = base
+        self.session_id = sid
         self.seq = 0
         for subdir in ("instinct", "experience", "reflections", "crashes", "memory"):
             os.makedirs(os.path.join(self.base, subdir), exist_ok=True)
@@ -214,9 +228,16 @@ class ReflectionLoop:
                  on_intent: Optional[IntentCb] = None,
                  on_instinct_deploy: Optional[DeployCb] = None,
                  on_status_change: Optional[StatusCb] = None,
+                 max_reflections: Optional[int] = None,
                  now: Callable[[], float] = time.time):
         self.creature = creature
         self.llm = llm
+        # Hard cap on the number of LLM reflections (cost ceiling for pricey
+        # models). None = unbounded. Once hit, needs_reflection() returns False
+        # and the body keeps performing with the last instinct (no more LLM
+        # calls) until the clip ends — so cost is bounded but the performance
+        # still runs full-length for beat-lock measurement.
+        self.max_reflections = max_reflections
         self.llm_info = llm_info or {}
         self.model = self.llm_info.get("model")
         # Timeline clock. Default is wall time (real spine). The simulator injects
@@ -317,6 +338,9 @@ class ReflectionLoop:
         self.store.save_memory(self.store.next_seq(), payload)
 
     def needs_reflection(self) -> bool:
+        if (self.max_reflections is not None
+                and self.session_usage["reflections"] >= self.max_reflections):
+            return False
         return not self._reflecting and (self.buffer.has_pending() or self.last_crashed)
 
     # ── Reflection cycle ──────────────────────────────────────────────

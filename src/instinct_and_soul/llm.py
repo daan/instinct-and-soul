@@ -56,6 +56,7 @@ LLM_MAX_TOKENS = 16384
 # else cost shows as "—".
 MODEL_PRICES = {
     "claude-sonnet-4-6":         (3.00, 15.00),
+    "claude-opus-4-8":           (5.00, 25.00),
     "claude-opus-4-7":           (15.00, 75.00),
     "claude-haiku-4-5-20251001": (0.80,  4.00),
     # Google Gemini — verify against current Google pricing. Note compute_cost's
@@ -107,8 +108,15 @@ class LLMClient(ABC):
 class AnthropicClient(LLMClient):
     api = "anthropic"
 
-    def __init__(self, model, api_key=None):
+    def __init__(self, model, api_key=None, thinking=None, max_output_tokens=None):
         self.model = model
+        # Adaptive thinking (Opus 4.8/4.7): the model reasons before replying.
+        # `thinking="adaptive"` → {"type": "adaptive"}; dict passed as-is; None =
+        # off. Thinking tokens bill as OUTPUT and share the max_tokens budget, so
+        # when it's on give a larger cap (config max_output_tokens) so the
+        # reasoning can't crowd out the instinct rewrite and truncate it.
+        self.thinking = thinking
+        self.max_tokens = max_output_tokens or LLM_MAX_TOKENS
         # api_key=None lets the SDK read ANTHROPIC_API_KEY from env.
         # timeout/max_retries: a single stuck connection must not stall the whole
         # sim — cap each request and let the SDK retry transient 429/5xx/timeouts.
@@ -118,19 +126,31 @@ class AnthropicClient(LLMClient):
         self.client = anthropic.AsyncAnthropic(**kwargs)
 
     async def call(self, system_prompt, user_message):
-        response = await self.client.messages.create(
-            model=self.model,
-            max_tokens=LLM_MAX_TOKENS,
-            system=[{
+        params = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "system": [{
                 "type": "text",
                 "text": system_prompt,
                 "cache_control": {"type": "ephemeral", "ttl": "1h"},
             }],
-            messages=[{"role": "user", "content": user_message}],
-            extra_headers={"anthropic-beta": "extended-cache-ttl-2025-04-11"},
-        )
+            "messages": [{"role": "user", "content": user_message}],
+            "extra_headers": {"anthropic-beta": "extended-cache-ttl-2025-04-11"},
+        }
+        if self.thinking is not None:
+            params["thinking"] = ({"type": self.thinking}
+                                  if isinstance(self.thinking, str) else self.thinking)
+        # Stream + get_final_message: with thinking on, max_tokens can exceed the
+        # SDK's ~10-min non-streaming guard, and streaming also keeps the
+        # connection alive on a long reasoning+rewrite reply.
+        async with self.client.messages.stream(**params) as stream:
+            response = await stream.get_final_message()
+        # First text block — skips a leading thinking block when thinking is on
+        # (its text is empty by default anyway); falls back to "" so a stray
+        # all-thinking reply just logs a missing intent instead of crashing.
+        text = next((b.text for b in response.content if b.type == "text"), "")
         return {
-            "text": response.content[0].text,
+            "text": text,
             # "max_tokens" here means the reply was truncated at the cap.
             "stop_reason": response.stop_reason,
             "usage": {
@@ -145,8 +165,16 @@ class AnthropicClient(LLMClient):
 class OpenAIClient(LLMClient):
     api = "openai"
 
-    def __init__(self, model, api_key=None, base_url=None):
+    def __init__(self, model, api_key=None, base_url=None,
+                 temperature=None, seed=None, thinking=None):
         self.model = model
+        # Sampling controls for reproducibility. seed + a fixed temperature make
+        # OpenAI-compatible endpoints (incl. z.ai) as repeatable as they allow —
+        # best-effort, not bit-guaranteed (see provider docs). `thinking` is the
+        # GLM/z.ai reasoning toggle, passed through untouched via extra_body.
+        self.temperature = temperature
+        self.seed = seed
+        self.thinking = thinking
         kwargs = {"timeout": LLM_TIMEOUT_S, "max_retries": LLM_MAX_RETRIES}
         if api_key:
             kwargs["api_key"] = api_key
@@ -157,14 +185,24 @@ class OpenAIClient(LLMClient):
     async def call(self, system_prompt, user_message):
         # 16K leaves room for reasoning-token models (Kimi K2.6, DeepSeek R1)
         # that burn output tokens on hidden thinking before the visible reply.
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            max_tokens=LLM_MAX_TOKENS,
-            messages=[
+        params = {
+            "model": self.model,
+            "max_tokens": LLM_MAX_TOKENS,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
             ],
-        )
+        }
+        if self.temperature is not None:
+            params["temperature"] = self.temperature
+        if self.seed is not None:
+            params["seed"] = self.seed
+        if self.thinking is not None:
+            # str → {"type": "enabled"|"disabled"}; dict passed as-is.
+            thinking = ({"type": self.thinking} if isinstance(self.thinking, str)
+                        else self.thinking)
+            params["extra_body"] = {"thinking": thinking}
+        response = await self.client.chat.completions.create(**params)
         usage = response.usage
         return {
             "text": response.choices[0].message.content,
@@ -281,9 +319,14 @@ def _client_from_dict(d):
     api_key = d.get("api_key")
     base_url = d.get("base_url")
     if api == "anthropic":
-        return AnthropicClient(model=model, api_key=api_key)
+        return AnthropicClient(model=model, api_key=api_key,
+                               thinking=d.get("thinking"),
+                               max_output_tokens=d.get("max_output_tokens"))
     if api == "openai":
-        return OpenAIClient(model=model, api_key=api_key, base_url=base_url)
+        return OpenAIClient(model=model, api_key=api_key, base_url=base_url,
+                            temperature=d.get("temperature"),
+                            seed=d.get("seed"),
+                            thinking=d.get("thinking"))
     if api in ("google", "gemini"):
         return GeminiClient(
             model=model, api_key=api_key,
@@ -295,7 +338,13 @@ def _client_from_dict(d):
 
 
 def _info(name, client):
-    return {"llm": name, "api": client.api, "model": client.model}
+    info = {"llm": name, "api": client.api, "model": client.model}
+    # Record sampling params so a session is reproducible from its own record.
+    for k in ("temperature", "seed", "thinking", "thinking_budget"):
+        v = getattr(client, k, None)
+        if v is not None:
+            info[k] = v
+    return info
 
 
 def load_llm(name=None):

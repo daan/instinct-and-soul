@@ -3,8 +3,10 @@
 __pycache__/
 
 # Per-creature session logs — contain interaction data + Claude reflections.
-creatures/*/logs/
-sim_creatures/*/logs/
+# ** matches any depth so logs under experiment subfolders (e.g.
+# sim_creatures/lala_repeated/<creature>/logs/) are ignored too.
+creatures/**/logs/
+sim_creatures/**/logs/
 
 # Simulator run output (captured sessions: imu/audio/midi/display + baked trace.json).
 sim_out/

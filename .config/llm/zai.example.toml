@@ -1,0 +1,17 @@
+# z.ai (Zhipu GLM) via the OpenAI-compatible API. Copy to `zai.toml` and fill in
+# api_key, then select with `sim-spine --llm zai`. Verify the exact base_url and
+# model names against z.ai's current docs (https://z.ai / https://open.bigmodel.cn).
+
+api      = "openai"                          # OpenAI-compatible endpoint
+base_url = "https://api.z.ai/api/paas/v4"    # z.ai OpenAI-compatible base URL
+model    = "glm-4.6"
+api_key  = "YOUR_ZAI_KEY"
+
+# ── Reproducibility / sampling (all optional) ────────────────────────────────
+# seed + a fixed temperature make runs as repeatable as the endpoint allows.
+# NOTE: this is best-effort, NOT bit-guaranteed — LLM endpoints (especially
+# third-party) may treat `seed` as advisory and still vary outputs run to run.
+seed        = 42        # fixes the sampling RNG
+temperature = 0.0       # 0.0 = most deterministic
+# thinking  = "disabled"  # GLM reasoning toggle: "enabled" | "disabled"
+#                         # (enabled spends extra output tokens before the reply)

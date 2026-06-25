@@ -75,6 +75,9 @@ def main():
                    help="A session dir, a creature dir (latest session), or a sim run dir.")
     p.add_argument("--rebake", action="store_true",
                    help="Force rebake even if trace.json exists.")
+    p.add_argument("--svg", metavar="PATH",
+                   help="Render a standalone timeline+log SVG to PATH and exit "
+                        "(no server). Self-contained, fit for a figure.")
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--host", default="127.0.0.1",
                    help="Interface to bind. Default localhost only. 0.0.0.0 for LAN.")
@@ -85,6 +88,14 @@ def main():
     run_dir = resolve_run(args.path)
     repo_root = find_repo_root(run_dir)
     data = bake_if_needed(run_dir, repo_root, args.rebake)
+
+    if args.svg:
+        from .svg import render_svg
+        svg = render_svg(data)
+        with open(args.svg, "w") as f:
+            f.write(svg)
+        print(f"wrote {args.svg}  ({len(svg)} bytes)", file=sys.stderr)
+        return
 
     rel = os.path.relpath(run_dir, repo_root)
     url = f"http://localhost:{args.port}/viewers/tracer/?trace={quote(rel)}"

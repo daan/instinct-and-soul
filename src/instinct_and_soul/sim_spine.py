@@ -138,7 +138,8 @@ class SimSpine:
     def __init__(self, creature: Creature, llm, llm_info: dict, *,
                  imu_path: str, duration_ms: float | None, resume: bool,
                  source: str | None = None, wrist: str | None = None,
-                 fps: float | None = None, reflection_time: float | None = None):
+                 fps: float | None = None, reflection_time: float | None = None,
+                 max_reflections: int | None = None):
         self.creature = creature
         self.imu_source = load_imu_source(imu_path)
         self.imu_path = imu_path
@@ -173,6 +174,7 @@ class SimSpine:
             on_intent=self._intent,
             on_instinct_deploy=self._deploy,
             on_status_change=self._status,
+            max_reflections=max_reflections,
             # Put reflection events on the sim clock so they align with the
             # IMU/audio/display stage on one axis.
             now=lambda: self.clock.now_ms / 1000.0,
@@ -416,6 +418,10 @@ def main():
                         "calls cost wall time). Omit to use the real LLM latency.")
     p.add_argument("--resume", action="store_true",
                    help="Resume from the last session's final experience/instinct")
+    p.add_argument("--max-reflections", type=int, default=None, metavar="N",
+                   help="Cap the run at N LLM reflections (cost ceiling for pricey "
+                        "models). After the cap the body keeps performing with the "
+                        "last instinct — no more LLM calls — until the clip ends.")
     args = p.parse_args()
 
     creature = Creature(args.creature_path)
@@ -470,7 +476,8 @@ def main():
     sim = SimSpine(creature, llm, llm_info,
                    imu_path=imu_path, duration_ms=duration_ms, resume=args.resume,
                    source=source, wrist=wrist, fps=fps,
-                   reflection_time=args.reflection_time)
+                   reflection_time=args.reflection_time,
+                   max_reflections=args.max_reflections)
     print(f"session:  {sim.loop.store.base}", file=sys.stderr)
     if sim.loop.resumed_from:
         print(f"resumed from: {sim.loop.resumed_from}", file=sys.stderr)

@@ -59,8 +59,16 @@ const eventsDurSec = events.length ? Math.max(...events.map(e => e.t)) + 2 : 0;
 const sessionDuration = Math.max(eventsDurSec, stageDurSec) || 60;
 
 // ---------- Header + legend ----------
+// m:ss for the header / transport, matching the timeline axis (which already
+// formats m:ss). Keeps every time display on the page consistent.
+function mmss(s) {
+  const m = Math.floor(s / 60);
+  const sec = Math.round(s - m * 60);
+  return `${m}:${String(sec).padStart(2, "0")}`;
+}
+
 document.getElementById("session-title").textContent =
-  `${trace.session_id} · ${events.length} events · ${sessionDuration.toFixed(0)}s`;
+  `${trace.session_id} · ${events.length} events · ${mmss(sessionDuration)}`;
 
 const legendEl = document.getElementById("legend");
 const presentKinds = new Set(events.map(e => e.kind));
@@ -232,6 +240,17 @@ function renderEvents(state) {
       sel.append("path").attr("d", `M0,${-r} L${r},0 L0,${r} L${-r},0 Z`);
     } else {
       sel.append("circle").attr("r", meta.radius);
+    }
+    // Label each deploy with the instinct version it shipped (v4, v7, …) so the
+    // soul lane reads as a version history. Inline style (not a CSS class) so it
+    // survives a plain SVG export, which doesn't carry the external stylesheet.
+    if (d.kind === "intent" && d.payload.instinct_changed) {
+      sel.append("text")
+        .attr("x", 0).attr("y", -(meta.radius + 4))
+        .attr("text-anchor", "middle")
+        .attr("font-size", "9px").attr("font-family", "monospace")
+        .attr("fill", meta.color)
+        .text("v" + d.payload.instinct_version_out);
     }
   });
 }
@@ -535,7 +554,7 @@ function setPlayhead(sec) {
   state.playheadTime = ph;
   renderPlayhead(state);
   if (!userScrubbing) scrubEl.value = sessionDuration > 0 ? Math.round(ph / sessionDuration * 1000) : 0;
-  timeEl.textContent = `${ph.toFixed(1)} / ${sessionDuration.toFixed(1)} s`;
+  timeEl.textContent = `${mmss(ph)} / ${mmss(sessionDuration)}`;
   if (stage) stage.render(ph);
 }
 function play() {
