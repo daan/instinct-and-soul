@@ -27,6 +27,7 @@ from .creature_sim.fake_mem import _Mem
 from .creature_sim.fake_m5 import _M5
 from .llm import load_llm
 from .reflection import Creature, ReflectionLoop
+from .instinct_tools import Calc
 
 
 class RealtimeClock:
@@ -129,6 +130,7 @@ def _build_scope(*, send, aio, imu, speaker, synth, mem, m5):
         "Synth":      synth,
         "Mem":        mem,
         "M5":         m5,
+        "Calc":       Calc,
     }
 
 

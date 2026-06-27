@@ -17,6 +17,7 @@ from .fake_synth import _CapturingSynth
 from .fake_mem import _Mem
 from .fake_m5 import _M5
 from .virtual_clock import VirtualScheduler, VAsyncio, StopSimulation  # noqa: F401
+from ..instinct_tools import Calc
 
 
 def _patch_time(clock: Clock):
@@ -46,6 +47,7 @@ def _build_scope(*, send, aio, imu, speaker, synth, mem, m5):
         "Synth":      synth,
         "Mem":        mem,
         "M5":         m5,
+        "Calc":       Calc,
     }
 
 
