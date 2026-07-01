@@ -25,6 +25,7 @@ from .creature_sim.fake_speaker import _CapturingSpeaker
 from .creature_sim.fake_synth import _CapturingSynth
 from .creature_sim.fake_mem import _Mem
 from .creature_sim.fake_m5 import _M5
+from .creature_sim.runner import _neutralize_injected_imports
 from .llm import load_llm
 from .reflection import Creature, ReflectionLoop
 from .instinct_tools import Calc
@@ -274,6 +275,10 @@ class SimSpine:
             send=self._make_send(), aio=_RTAsyncio(self),
             imu=self.imu, speaker=self.speaker, synth=self.synth, mem=self.mem, m5=self.m5,
         )
+        # The soul may `import` names the sim injects into scope (asyncio shim,
+        # Imu/Synth/Mem/Calc/M5) — valid on the real M5/MicroPython, but in the
+        # sim a real import shadows the shim or ModuleNotFoundError's. Neutralize.
+        code = _neutralize_injected_imports(code)
         try:
             exec(compile(code, f"<instinct-v{self.loop.instinct_version}>", "exec"), scope)
         except Exception:

@@ -51,6 +51,32 @@ def _build_scope(*, send, aio, imu, speaker, synth, mem, m5):
     }
 
 
+# Names the sim injects into the instinct scope (above) that the soul may instead
+# try to `import` — valid on the real M5/MicroPython (real modules with sleep_ms,
+# etc.), but in the sim a real import either shadows the injected shim (asyncio)
+# or fails with ModuleNotFoundError (Imu/Synth/Mem/Calc/M5). Replace any such
+# import with a no-op (line numbers preserved) so the injected object is used.
+_INJECTED_NAMES = ("asyncio", "uasyncio", "M5", "Imu", "Synth", "Speaker",
+                   "Mem", "Calc", "math", "time", "struct")
+
+
+def _neutralize_injected_imports(code: str) -> str:
+    out = []
+    for line in code.split("\n"):
+        stripped = line.split("#", 1)[0].strip()
+        mod = None
+        if stripped.startswith("from ") and " import " in stripped:
+            mod = stripped[5:].split(" import ", 1)[0].strip().split(".")[0]
+        elif stripped.startswith("import "):
+            mod = stripped[7:].split(" as ")[0].split(",")[0].strip().split(".")[0]
+        if mod in _INJECTED_NAMES:
+            indent = line[:len(line) - len(line.lstrip())]
+            out.append(indent + "pass  # sim: provided in scope, not importable")
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 def run_sim(
     *,
     instinct_code: str,
@@ -92,6 +118,7 @@ def run_sim(
     scope = _build_scope(send=captured_send, aio=VAsyncio(sched),
                          imu=imu, speaker=speaker, synth=synth, mem=mem, m5=m5)
 
+    instinct_code = _neutralize_injected_imports(instinct_code)
     try:
         exec(compile(instinct_code, "<instinct>", "exec"), scope)
     except Exception:

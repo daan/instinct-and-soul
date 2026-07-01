@@ -277,6 +277,100 @@ class AlphaBeta:
         return self.T if self.T else 0.0
 
 
+def _qrot(q, vx, vy, vz):
+    """Rotate vector v by quaternion q=[w,x,y,z] (applies R(q): sensor->world)."""
+    w, x, y, z = q
+    tx = 2.0 * (y * vz - z * vy)
+    ty = 2.0 * (z * vx - x * vz)
+    tz = 2.0 * (x * vy - y * vx)
+    return (vx + w * tx + (y * tz - z * ty),
+            vy + w * ty + (z * tx - x * tz),
+            vz + w * tz + (x * ty - y * tx))
+
+
+class Madgwick:
+    """Madgwick AHRS (IMU mode: accelerometer + gyroscope, no magnetometer).
+    Fuses the accelerometer's absolute 'down' (gravity) with the gyroscope's
+    smooth rotation into an attitude, so you can read the sensor as VECTORS IN
+    SPACE instead of raw axes. Make one at the top of run(); each loop call
+    update(ax, ay, az, gx, gy, gz, now) with accel in g and gyro in deg/s.
+
+    update() returns the world-frame linear acceleration (ax, ay, az) in
+    **m/s^2**, gravity removed — the body's motion THROUGH SPACE as a SIGNED
+    vector in fixed world axes (x, y horizontal; z = up), the same no matter how
+    the sensor is twisted (so +z is reaching up, -z dropping; the sign of each
+    axis is a real direction, not just a magnitude). Other readings:
+        up()   -> gravity 'up' as a unit 3-vector in the SENSOR frame (tilt/pose;
+                  dimensionless direction)
+        quat() -> (w, x, y, z) unit quaternion, orientation sensor->world
+    Tilt (pitch/roll) is absolutely referenced by gravity and does not drift;
+    heading (yaw) rides the gyro and can drift slowly (there is no magnetometer).
+    Pass q=(w,x,y,z) to start from a known orientation instead of level."""
+
+    def __init__(self, beta=0.08, q=None):
+        self.q = [1.0, 0.0, 0.0, 0.0] if q is None else [float(v) for v in q]
+        self.beta = beta
+        self.t_prev = None
+        self._wacc = (0.0, 0.0, 0.0)
+
+    def update(self, ax, ay, az, gx, gy, gz, now_s):
+        if self.t_prev is None:
+            dt = 0.0
+        else:
+            dt = now_s - self.t_prev
+        self.t_prev = now_s
+        q0, q1, q2, q3 = self.q
+        d2r = 0.017453292519943295
+        wx, wy, wz = gx * d2r, gy * d2r, gz * d2r            # deg/s -> rad/s
+        if 0.0 < dt < 1.0:
+            # quaternion rate from the gyro
+            qd0 = 0.5 * (-q1 * wx - q2 * wy - q3 * wz)
+            qd1 = 0.5 * ( q0 * wx + q2 * wz - q3 * wy)
+            qd2 = 0.5 * ( q0 * wy - q1 * wz + q3 * wx)
+            qd3 = 0.5 * ( q0 * wz + q1 * wy - q2 * wx)
+            # accelerometer gradient-descent correction (pulls 'up' toward gravity)
+            n = math.sqrt(ax * ax + ay * ay + az * az)
+            if n > 1e-9:
+                nx, ny, nz = ax / n, ay / n, az / n
+                _2q0, _2q1, _2q2, _2q3 = 2.0 * q0, 2.0 * q1, 2.0 * q2, 2.0 * q3
+                _4q0, _4q1, _4q2 = 4.0 * q0, 4.0 * q1, 4.0 * q2
+                _8q1, _8q2 = 8.0 * q1, 8.0 * q2
+                q0q0, q1q1, q2q2, q3q3 = q0 * q0, q1 * q1, q2 * q2, q3 * q3
+                s0 = _4q0 * q2q2 + _2q2 * nx + _4q0 * q1q1 - _2q1 * ny
+                s1 = (_4q1 * q3q3 - _2q3 * nx + 4.0 * q0q0 * q1 - _2q0 * ny
+                      - _4q1 + _8q1 * q1q1 + _8q1 * q2q2 + _4q1 * nz)
+                s2 = (4.0 * q0q0 * q2 + _2q0 * nx + _4q2 * q3q3 - _2q3 * ny
+                      - _4q2 + _8q2 * q1q1 + _8q2 * q2q2 + _4q2 * nz)
+                s3 = 4.0 * q1q1 * q3 - _2q1 * nx + 4.0 * q2q2 * q3 - _2q2 * ny
+                sn = math.sqrt(s0 * s0 + s1 * s1 + s2 * s2 + s3 * s3)
+                if sn > 1e-9:
+                    b = self.beta / sn
+                    qd0 -= b * s0; qd1 -= b * s1; qd2 -= b * s2; qd3 -= b * s3
+            q0 += qd0 * dt; q1 += qd1 * dt; q2 += qd2 * dt; q3 += qd3 * dt
+            qn = math.sqrt(q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3)
+            if qn > 1e-9:
+                self.q = [q0 / qn, q1 / qn, q2 / qn, q3 / qn]
+        # motion through space: sensor accel rotated to world, gravity removed,
+        # converted from g to m/s^2
+        rx, ry, rz = _qrot(self.q, ax, ay, az)
+        self._wacc = (rx * 9.81, ry * 9.81, (rz - 1.0) * 9.81)
+        return self._wacc
+
+    def up(self):
+        """Gravity 'up' direction in the SENSOR frame (unit 3-vector)."""
+        w, x, y, z = self.q
+        return (2.0 * (x * z - w * y), 2.0 * (y * z + w * x), 1.0 - 2.0 * (x * x + y * y))
+
+    def world_accel(self):
+        return self._wacc
+
+    def quat(self):
+        return tuple(self.q)
+
+
+Pose = Madgwick    # backward-compatible alias
+
+
 class Calc:
     """Namespace injected into the instinct scope (like Imu / Synth / Mem)."""
     OneEuro = OneEuro
@@ -284,3 +378,5 @@ class Calc:
     Onset = Onset
     Periodicity = Periodicity
     AlphaBeta = AlphaBeta
+    Madgwick = Madgwick
+    Pose = Madgwick    # alias so older instincts keep working

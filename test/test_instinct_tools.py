@@ -10,7 +10,7 @@ import random
 import statistics
 
 from instinct_and_soul.instinct_tools import (
-    OneEuro, Running, Onset, Periodicity, AlphaBeta)
+    OneEuro, Running, Onset, Periodicity, AlphaBeta, Madgwick)
 
 FS = 100.0
 DT = 1.0 / FS
@@ -108,10 +108,75 @@ def test_alphabeta_predicts_and_adapts():
             f"{statistics.mean(errs)*1000:.0f}ms, tracked drift to {ab2.period():.2f}")
 
 
+def _ang(u, v):
+    """Angle in degrees between two 3-vectors."""
+    du = math.sqrt(sum(c * c for c in u)) or 1.0
+    dv = math.sqrt(sum(c * c for c in v)) or 1.0
+    d = sum(a * b for a, b in zip(u, v)) / (du * dv)
+    return math.degrees(math.acos(max(-1.0, min(1.0, d))))
+
+
+def test_madgwick_recovers_static_tilt():
+    """At rest, gravity 'up' should converge to the measured accel direction,
+    and report ~no motion through space."""
+    # sensor tilted 30 deg about x: gravity reads [0, sin30, cos30] in sensor frame
+    g = (0.0, math.sin(math.radians(30)), math.cos(math.radians(30)))
+    p = Madgwick(beta=0.2)
+    wacc = (0, 0, 0)
+    for i in range(int(4 * FS)):
+        wacc = p.update(g[0], g[1], g[2], 0.0, 0.0, 0.0, i * DT)
+    tilt_err = _ang(p.up(), g)
+    motion = math.sqrt(sum(c * c for c in wacc))
+    assert tilt_err < 2.0, tilt_err                      # recovers the 30 deg tilt
+    assert motion < 0.05, motion                         # at rest -> no world motion
+    return f"tilt recovered to {tilt_err:.2f}deg, residual motion {motion:.3f}g"
+
+
+def test_madgwick_integrates_pure_yaw():
+    """A constant yaw rate about gravity integrates to the right angle, and
+    leaves tilt (up) unchanged."""
+    rate = 90.0                                          # deg/s about world up (z)
+    p = Madgwick(beta=0.05)
+    secs = 2.0
+    for i in range(int(secs * FS)):
+        p.update(0.0, 0.0, 1.0, 0.0, 0.0, rate, i * DT)  # level, spinning in yaw
+    # yaw from quaternion (rotation about z): angle = 2*atan2(z, w)
+    w, x, y, z = p.quat()
+    yaw = math.degrees(2.0 * math.atan2(z, w)) % 360.0
+    expected = (rate * secs) % 360.0                     # 180 deg
+    err = min(abs(yaw - expected), 360.0 - abs(yaw - expected))
+    up_err = _ang(p.up(), (0.0, 0.0, 1.0))
+    assert err < 5.0, (yaw, expected)                    # integrated yaw correct
+    assert up_err < 1.0, up_err                          # yaw doesn't tilt 'up'
+    return f"yaw integrated to {yaw:.0f}deg (exp {expected:.0f}), tilt held {up_err:.2f}deg"
+
+
+def test_madgwick_world_accel_is_frame_stable():
+    """The same world-frame push reads the same in world coords no matter how
+    the sensor is rotated about gravity. Sensor yawed 90 deg; a push that is
+    +x in the sensor frame must still come out along a consistent world axis."""
+    # settle two poses: one level, one yawed 90 deg about z, both at rest
+    level = Madgwick(beta=0.1)
+    yawed = Madgwick(beta=0.1, q=(math.cos(math.radians(45)), 0, 0, math.sin(math.radians(45))))
+    for i in range(int(2 * FS)):
+        level.update(0, 0, 1, 0, 0, 0, i * DT)
+        yawed.update(0, 0, 1, 0, 0, 0, i * DT)
+    # a +y push in EACH sensor's own frame (accel = gravity + lateral)
+    t = 2.0
+    wl = level.update(0.0, 0.5, 1.0, 0, 0, 0, t)
+    wy = yawed.update(0.0, 0.5, 1.0, 0, 0, 0, t)
+    # level: +y sensor -> +y world. yawed 90 about z: +y sensor -> -x world.
+    assert wl[1] > 0.4 and abs(wl[0]) < 0.1, wl
+    assert wy[0] < -0.4 and abs(wy[1]) < 0.1, wy
+    return f"level push -> world {tuple(round(c,2) for c in wl)}, yawed -> {tuple(round(c,2) for c in wy)}"
+
+
 def main():
     tests = [test_oneeuro_denoises_and_tracks, test_running_matches_known_stats,
              test_onset_finds_known_accents, test_periodicity_recovers_known_tempo,
-             test_alphabeta_predicts_and_adapts]
+             test_alphabeta_predicts_and_adapts,
+             test_madgwick_recovers_static_tilt, test_madgwick_integrates_pure_yaw,
+             test_madgwick_world_accel_is_frame_stable]
     ok = 0
     for t in tests:
         try:
