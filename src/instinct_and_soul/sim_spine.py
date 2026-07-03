@@ -26,6 +26,7 @@ from .creature_sim.fake_synth import _CapturingSynth
 from .creature_sim.fake_mem import _Mem
 from .creature_sim.fake_m5 import _M5
 from .creature_sim.runner import _neutralize_injected_imports
+from .creature_sim.organs import load_organs
 from .llm import load_llm
 from .reflection import Creature, ReflectionLoop
 from .instinct_tools import Calc
@@ -195,6 +196,9 @@ class SimSpine:
                                      os.path.join(session_dir, "output", "midi_events.jsonl"))
         # One Mem for the whole session: it must survive every instinct hot-swap.
         self.mem = _Mem()
+        # Per-creature organs (organs.py): loaded once per session so organ
+        # state survives hot-swaps; attach() is called at every instinct load.
+        self._organs_attach = load_organs(creature.path)
         screen = devices.resolve(creature.device)["screen"]
         self.m5 = _M5(self.clock,
                       os.path.join(session_dir, "output", "display_log.jsonl"),
@@ -275,10 +279,15 @@ class SimSpine:
             send=self._make_send(), aio=_RTAsyncio(self),
             imu=self.imu, speaker=self.speaker, synth=self.synth, mem=self.mem, m5=self.m5,
         )
+        organ_names = ()
+        if self._organs_attach:
+            before = set(scope)
+            self._organs_attach(scope)
+            organ_names = tuple(set(scope) - before)
         # The soul may `import` names the sim injects into scope (asyncio shim,
-        # Imu/Synth/Mem/Calc/M5) — valid on the real M5/MicroPython, but in the
-        # sim a real import shadows the shim or ModuleNotFoundError's. Neutralize.
-        code = _neutralize_injected_imports(code)
+        # Imu/Synth/Mem/Calc/M5, organ senses) — valid on the real M5/MicroPython,
+        # but in the sim a real import shadows the shim or ModuleNotFoundError's.
+        code = _neutralize_injected_imports(code, organ_names)
         try:
             exec(compile(code, f"<instinct-v{self.loop.instinct_version}>", "exec"), scope)
         except Exception:

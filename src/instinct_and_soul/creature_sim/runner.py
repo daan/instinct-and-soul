@@ -17,6 +17,7 @@ from .fake_synth import _CapturingSynth
 from .fake_mem import _Mem
 from .fake_m5 import _M5
 from .virtual_clock import VirtualScheduler, VAsyncio, StopSimulation  # noqa: F401
+from .organs import load_organs
 from ..instinct_tools import Calc
 
 
@@ -60,7 +61,8 @@ _INJECTED_NAMES = ("asyncio", "uasyncio", "M5", "Imu", "Synth", "Speaker",
                    "Mem", "Calc", "math", "time", "struct")
 
 
-def _neutralize_injected_imports(code: str) -> str:
+def _neutralize_injected_imports(code: str, extra: tuple = ()) -> str:
+    names = _INJECTED_NAMES + tuple(extra)
     out = []
     for line in code.split("\n"):
         stripped = line.split("#", 1)[0].strip()
@@ -69,7 +71,7 @@ def _neutralize_injected_imports(code: str) -> str:
             mod = stripped[5:].split(" import ", 1)[0].strip().split(".")[0]
         elif stripped.startswith("import "):
             mod = stripped[7:].split(" as ")[0].split(",")[0].strip().split(".")[0]
-        if mod in _INJECTED_NAMES:
+        if mod in names:
             indent = line[:len(line) - len(line.lstrip())]
             out.append(indent + "pass  # sim: provided in scope, not importable")
         else:
@@ -85,6 +87,7 @@ def run_sim(
     output_dir: str,
     meta: Optional[dict] = None,
     screen=(135, 240),
+    creature_dir: Optional[str] = None,
 ) -> dict:
     """Run instinct.py code in the simulator. Writes captured events to output_dir.
 
@@ -118,7 +121,15 @@ def run_sim(
     scope = _build_scope(send=captured_send, aio=VAsyncio(sched),
                          imu=imu, speaker=speaker, synth=synth, mem=mem, m5=m5)
 
-    instinct_code = _neutralize_injected_imports(instinct_code)
+    # Per-creature organs may wrap scope entries or add new senses (organs.py).
+    organ_names = ()
+    attach = load_organs(creature_dir)
+    if attach:
+        before = set(scope)
+        attach(scope)
+        organ_names = tuple(set(scope) - before)
+
+    instinct_code = _neutralize_injected_imports(instinct_code, organ_names)
     try:
         exec(compile(instinct_code, "<instinct>", "exec"), scope)
     except Exception:

@@ -135,6 +135,7 @@ def main():
         output_dir=output,
         meta=meta,
         screen=screen,
+        creature_dir=creature_dir,
     )
 
     print(f"--- summary ---", file=sys.stderr)
