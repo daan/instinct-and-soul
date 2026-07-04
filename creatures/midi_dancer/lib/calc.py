@@ -372,6 +372,62 @@ class Madgwick:
 Pose = Madgwick    # backward-compatible alias
 
 
+class Flow:
+    """Leaky integrator over world-frame linear acceleration (Madgwick's
+    output) -> a running velocity estimate: the body's travel through space as
+    a signed vector, plus the moment that travel turns around. The leak keeps
+    integration drift bounded, so the magnitude is a short-horizon speed, not
+    an odometer — trust direction and the rhythm of reversals over absolute
+    size. Feed every loop with the (wx, wy, wz) Madgwick.update() returns.
+
+        f.update(wx, wy, wz, now_s) -> (vx, vy, vz)   # world frame, ~m/s
+        f.reversal() -> None | (axis, sign)
+            ('x'|'y'|'z', +1|-1) the instant travel along the currently
+            dominant axis flips direction — a swing's turnaround. The event
+            is consumed on read; it fires once, shortly after the turn (the
+            new stroke must exceed min_speed to confirm).
+    """
+
+    def __init__(self, leak=2.0, min_speed=0.4):
+        self._v = [0.0, 0.0, 0.0]
+        self._leak = leak          # fraction of velocity shed per second
+        self._min = min_speed      # speed needed to confirm a direction
+        self._last_t = None
+        self._sign = [0, 0, 0]     # last confirmed direction per axis
+        self._rev = None
+
+    def update(self, wx, wy, wz, now_s):
+        if self._last_t is None:
+            self._last_t = now_s
+        dt = now_s - self._last_t
+        self._last_t = now_s
+        if dt < 0.0:
+            dt = 0.0
+        elif dt > 0.1:
+            dt = 0.1               # a feeding gap must not integrate garbage
+        k = 1.0 - self._leak * dt
+        if k < 0.0:
+            k = 0.0
+        v = self._v
+        v[0] = v[0] * k + wx * dt
+        v[1] = v[1] * k + wy * dt
+        v[2] = v[2] * k + wz * dt
+        m0, m1, m2 = abs(v[0]), abs(v[1]), abs(v[2])
+        dom = 0 if (m0 >= m1 and m0 >= m2) else (1 if m1 >= m2 else 2)
+        if (m0, m1, m2)[dom] > self._min:
+            s = 1 if v[dom] > 0 else -1
+            if self._sign[dom] != 0 and s != self._sign[dom]:
+                self._rev = ("xyz"[dom], s)
+            self._sign[dom] = s
+        return (v[0], v[1], v[2])
+
+    def reversal(self):
+        r = self._rev
+        self._rev = None
+        return r
+
+
+
 class Calc:
     """Namespace injected into the instinct scope (like Imu / Synth / Mem)."""
     OneEuro = OneEuro
@@ -381,3 +437,4 @@ class Calc:
     AlphaBeta = AlphaBeta
     Madgwick = Madgwick
     Pose = Madgwick    # alias so older instincts keep working
+    Flow = Flow
