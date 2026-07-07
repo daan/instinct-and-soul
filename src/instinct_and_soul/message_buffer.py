@@ -22,8 +22,13 @@ class MessageBuffer:
     """
 
     def __init__(self, *,
-                 drop_after_instinct_change: bool = True,
+                 drop_after_instinct_change: bool = False,
                  spare_operator: bool = True):
+        # Default is now journal semantics: entries are NEVER dropped — each
+        # carries its authoring instinct version and the reflection prompt
+        # marks provenance, which solves the staleness confusion without
+        # deleting world-facts. The drop policy remains available for
+        # comparison experiments only.
         self._buffer: list[dict] = []
         self.drop_after_instinct_change = drop_after_instinct_change
         self.spare_operator = spare_operator

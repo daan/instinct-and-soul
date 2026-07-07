@@ -223,7 +223,8 @@ class SimSpine:
             # live session is automatically a clip for later --imu replays.
             self.osc_source = OscImuSource(
                 osc_port, self.clock,
-                os.path.join(session_dir, "input", "imu_stream.jsonl"))
+                os.path.join(session_dir, "input", "imu_stream.jsonl"),
+                mag_log_path=os.path.join(session_dir, "input", "mag_stream.jsonl"))
             self.imu = _LiveImu(self.osc_source, self.clock, reads_path)
         else:
             self.osc_source = None

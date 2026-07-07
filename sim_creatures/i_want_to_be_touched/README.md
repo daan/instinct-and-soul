@@ -40,16 +40,49 @@ touch, going quiet, developing a signature — is the soul's to invent.
   the touch's direction in the gravity frame (~1 up-down, ~0 sideways), the
   first ingredient of gesture identity. The seed savors being fed out loud
   (satisfaction must be audible) and answers touches by direction.
-- `3_together` (planned) — the contingency organ: pairs the creature's own
-  recent output (efference copy of MIDI) with subsequent handling on one
-  timeline — did the invitation summon a touch? did purring prolong the hold?
-  Baseline-corrected, reported with confidence. Needs a *responsive* partner:
-  a replayed recording is non-contingent and must read ~0 (that's the organ's
-  null test); a real human (see PERSONA.md) or a synthetic closed-loop
-  fake-human is required for a positive signal.
-- `4_light` (planned) — RGB/screen return channel (OSC back to the device).
+- `3_together` — the contingency organ, promoted after a 2_hunger soul
+  announced "tracking how quickly" a new call style drew the person back and
+  never built the mechanics. `Together` watches the Ear and the contact
+  stream: any voicing while alone (≥3 s) is an invitation-attempt (bursts
+  split at 3 s gaps), answered if contact follows within 20 s; matched
+  silent stretches score the baseline the same way. attempts()/answered()/
+  baseline() — counts, never conclusions; "if answered doesn't beat
+  baseline, your calls are decoration." Needs a *responsive* partner: on a
+  replayed recording answered≈baseline by construction (the null test); a
+  real human (PERSONA.md) is required for signal. The hidden-"yes"
+  experiment: adopt a private convention (e.g. a stroke when you like what
+  it did), never tell it, and see whether the soul finds it in the numbers.
+- `4_familiar` — recurrence as a percept, and recognition as reward. The
+  `Familiar` organ clusters completed touches online ([log dur↓weighted,
+  log peak, rise, wiggle-rate, vert]; nearest exemplar within r=0.85, core-
+  gated EMA so rim hits can't blob clusters): last()/recognized() (fires at
+  3+ sightings)/gestures(). Heritage: the pose→motion→pose "kata"
+  recognizers of pre-IMU sonification toys — always sonify the motion (the
+  trace), reward the recognized form on top. The seed's law: identity picks
+  the motif, the instance plays it — same gesture, same figure; vigor sets
+  force, pace sets tempo, a bent gesture bends the reply. An instrument,
+  not a jukebox. Validated: a wave/circle session separates into a vertical
+  family (6×) and horizontal families with honest singletons.
+- `5_expressive` — gestures as an expressive instrument, staged on a
+  Laban-like effort vector. Touch episodes extend to
+  [dur, peak, rise, wiggles, impact, vert, size, curl, fluency]: size =
+  travel path length (big vs small at last), curl = open vs closed travel
+  (stroke vs circle/oscillation), fluency = jerk normalized by amplitude
+  (calibrated: flowing ~0.9, rough ~0.35). Familiar clusters on identity
+  dims INCLUDING curl+size but deliberately EXCLUDING fluency — the same
+  gesture done more smoothly stays the same gesture, so recognition holds
+  while quality improves (the coaching invariant). Seed mappings: fluency →
+  beauty (brightness/glide/space follow smoothness, continuously — coaching
+  without rules), circles → figures that turn (cyclic contour + orbiting
+  pan), casts → one long sweep, lower the bigger the journey. Plus live
+  Motion.fluency().
+- `6_light` (planned) — RGB/screen return channel (OSC back to the device).
 
 ## Running
+
+Session scripts: PERSONA.md (how to behave — honest reactions with
+thresholds), PROTOCOL.md (what to try — a ~12 min walkthrough exercising
+every organ once, including the hidden-"yes" convention).
 
 Live (device streaming; CoreS3Recorder osc firmware, `/imu` on UDP :9000):
 

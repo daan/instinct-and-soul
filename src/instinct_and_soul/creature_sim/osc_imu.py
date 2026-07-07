@@ -64,6 +64,24 @@ def parse_imu_packet(data: bytes):
         return None
 
 
+def parse_mag_packet(data: bytes):
+    """Decode one /mag OSC packet → (t_ms, (mx,my,mz)) or None.
+    The CoreS3 firmware sends the calibrated field vector, device frame."""
+    try:
+        end = data.index(b"\x00")
+        if data[:end] != b"/mag":
+            return None
+        off = _pad4(end)
+        tt_end = data.index(b"\x00", off)
+        if data[off:tt_end] != b",ifff":
+            return None
+        off = off + _pad4(tt_end - off)
+        t_ms, mx, my, mz = struct.unpack_from(">i3f", data, off)
+        return t_ms, (mx, my, mz)
+    except (ValueError, struct.error):
+        return None
+
+
 def build_imu_packet(t_ms: int, accel, gyro) -> bytes:
     return (b"/imu\x00\x00\x00\x00" + b",iffffff\x00\x00\x00\x00"
             + struct.pack(">i6f", int(t_ms) & 0x7FFFFFFF,
@@ -76,15 +94,21 @@ def build_imu_packet(t_ms: int, accel, gyro) -> bytes:
 class OscImuSource(asyncio.DatagramProtocol):
     """Listen for /imu packets; keep the latest sample; log the full stream."""
 
-    def __init__(self, port: int, clock, stream_log_path: str):
+    def __init__(self, port: int, clock, stream_log_path: str,
+                 mag_log_path: str | None = None):
         self.port = port
         self._clock = clock
         os.makedirs(os.path.dirname(stream_log_path), exist_ok=True)
         self._log = open(stream_log_path, "w")
+        # /mag packets (if the firmware sends them) go to their own file —
+        # imu_stream.jsonl must stay pure {t, ax..gz} so --imu replay works.
+        self._mag_log = open(mag_log_path, "w") if mag_log_path else None
         # Resting defaults until the first packet: flat on a table, 1 g up.
         self.accel = (0.0, 0.0, 1.0)
         self.gyro = (0.0, 0.0, 0.0)
+        self.mag = (0.0, 0.0, 0.0)     # calibrated field, device frame (uT)
         self.packets = 0
+        self.mag_packets = 0
         self.last_rx_wall = None       # time.monotonic() of the last packet
         self.sender = None             # (ip, port) of the streaming device
         self._transport = None
@@ -106,6 +130,15 @@ class OscImuSource(asyncio.DatagramProtocol):
     def datagram_received(self, data, addr):
         parsed = parse_imu_packet(data)
         if parsed is None:
+            m = parse_mag_packet(data)
+            if m is not None:
+                t_dev, self.mag = m
+                self.mag_packets += 1
+                if self._mag_log is not None:
+                    v = self.mag
+                    self._mag_log.write(json.dumps({
+                        "t": self._clock.now_ms, "mx": v[0], "my": v[1],
+                        "mz": v[2], "dt": t_dev}) + "\n")
             return
         t_dev, self.accel, self.gyro = parsed
         self.packets += 1
@@ -131,6 +164,11 @@ class OscImuSource(asyncio.DatagramProtocol):
             self._log.close()
         except Exception:
             pass
+        if self._mag_log is not None:
+            try:
+                self._mag_log.close()
+            except Exception:
+                pass
 
 
 class _LiveImu:
@@ -156,7 +194,9 @@ class _LiveImu:
         return self._source.gyro
 
     def getMag(self):
-        return (0.0, 0.0, 0.0)
+        """Calibrated field vector (uT, device frame) when the firmware
+        streams /mag; zeros otherwise."""
+        return self._source.mag
 
     def close(self):
         try:

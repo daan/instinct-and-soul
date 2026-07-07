@@ -58,6 +58,12 @@ class _CapturingSynth:
         self._emit({"kind": "control_change", "ch": _clamp(ch, 0, 15),
                     "control": _clamp(control, 0, 127), "value": _clamp(value, 0, 127)})
 
+    def pitch_bend(self, ch, value):
+        """value -8192..8191, 0 = center; full range spans ±2 semitones on a
+        GM synth, so ±4096 is about ±1 semitone — the whammy bar."""
+        self._emit({"kind": "pitch_bend", "ch": _clamp(ch, 0, 15),
+                    "value": _clamp(value, -8192, 8191)})
+
     def close(self):
         try:
             self._log.close()

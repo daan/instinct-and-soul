@@ -117,6 +117,10 @@ def events_to_midi(events_path, tpb: int = TPB, bpm: float = BPM) -> tuple[MidiF
             if kind == "program":
                 timed.append((tick(t), _PRIORITY[kind],
                               Message("program_change", channel=ch, program=int(ev["program"]))))
+            elif kind == "pitch_bend":
+                timed.append((tick(t), 0,
+                              Message("pitchwheel", channel=ch,
+                                      pitch=int(ev["value"]))))
             elif kind == "control_change":
                 timed.append((tick(t), _PRIORITY[kind],
                               Message("control_change", channel=ch,

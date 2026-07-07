@@ -59,6 +59,9 @@ class FluidSynthOut:
     def control_change(self, ch, control, value):
         self._cmd(f"cc {ch} {control} {value}")
 
+    def pitch_bend(self, ch, value):
+        self._cmd(f"pitchbend {ch} {value + 8192}")   # shell wants 0..16383
+
     def close(self):
         try:
             if self._proc.poll() is None:
@@ -90,6 +93,8 @@ class LiveSynth(_CapturingSynth):
             self._out.note_off(payload["ch"], payload["note"])
         elif kind == "control_change":
             self._out.control_change(payload["ch"], payload["control"], payload["value"])
+        elif kind == "pitch_bend":
+            self._out.pitch_bend(payload["ch"], payload["value"])
         elif kind == "note":
             ch, note = payload["ch"], payload["note"]
             self._out.note_on(ch, note, payload["velocity"])

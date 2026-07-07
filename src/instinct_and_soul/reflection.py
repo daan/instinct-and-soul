@@ -322,7 +322,12 @@ class ReflectionLoop:
     # ── Inputs from host ──────────────────────────────────────────────
 
     def add_message(self, content: str) -> None:
-        self.buffer.add({"ts": self._now(), "content": content})
+        # Stamp the authoring instinct version: journal entries are never
+        # dropped, so the reflection must be able to attribute each entry to
+        # the code that wrote it (entries from before a deploy describe the
+        # OLD code's behavior — but the world-facts in them are still facts).
+        self.buffer.add({"ts": self._now(), "content": content,
+                         "v": self.instinct_version})
 
     def add_operator(self, text: str) -> None:
         tagged = "OPERATOR: " + text
@@ -356,7 +361,23 @@ class ReflectionLoop:
         self.last_crashed = False
         self.last_crash_msg = ""
 
-        messages_xml = "\n".join("  [{ts}] {content}".format(**m) for m in messages)
+        # Render with provenance: entries written by a previous instinct are
+        # marked, so the soul never mistakes the old code's reports for the
+        # new code's behavior — the fix that used to be done by dropping them.
+        lines = []
+        prev_v = None
+        for i, m in enumerate(messages):
+            v = m.get("v")
+            if v is not None and (i == 0 or v != prev_v):
+                if v != self.instinct_version:
+                    lines.append("  -- entries below were written by instinct "
+                                 "v{} (before your latest deploy) --".format(v))
+                elif i > 0:
+                    lines.append("  -- your current instinct v{} from here "
+                                 "on --".format(v))
+            prev_v = v
+            lines.append("  [{ts}] {content}".format(ts=m["ts"], content=m["content"]))
+        messages_xml = "\n".join(lines)
         crashed_xml = "true\n{}".format(crash_msg) if crashed else "false"
 
         reflection_prompt = (
@@ -459,13 +480,10 @@ class ReflectionLoop:
                     except Exception as e:
                         self._on_log("instinct deploy callback raised: {}".format(e), "bold red")
 
-                dropped = self.buffer.on_instinct_changed()
-                if dropped:
-                    reflection["dropped_after"] = dropped
-                    self._on_log(
-                        "dropped {} stale message(s) after instinct change".format(len(dropped)),
-                        "dim",
-                    )
+                # Journal principle: entries written during the reflection are
+                # never dropped — they carry their authoring version ("v") and
+                # the prompt marks them, so the next reflection can attribute
+                # them to the old code without losing the world-facts in them.
 
             if new_experience is not None:
                 self.current_experience = new_experience

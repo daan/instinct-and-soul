@@ -119,6 +119,7 @@ Add a section here once each is probed. Each section should follow the IMU templ
 - [ ] IR transmitter (StickS3 has one — needs separate module probe)
 - [ ] Power deep/light sleep behavior
 - [ ] Vibration accessory (when chosen) — probe pin and PWM frequency
+- [ ] Thermal2 unit on Grove (I2C 0x32, MLX90640 behind an MCU) — probe with `test/STICKS3/test_thermal`, then document register map + confirmed fps here
 
 ## Probing recipe
 
