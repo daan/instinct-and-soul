@@ -189,6 +189,13 @@ class VersionStore:
         ):
             with open(os.path.join(self.base, name), "w") as f:
                 f.write(content)
+        # The organs define the body — a session without them is not
+        # reproducible (their constants are calibration provenance).
+        organs = os.path.join(creature.path, "organs.py")
+        if os.path.isfile(organs):
+            with open(organs) as src, \
+                 open(os.path.join(self.base, "organs.py"), "w") as dst:
+                dst.write(src.read())
 
     def next_seq(self):
         self.seq += 1

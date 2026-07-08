@@ -394,6 +394,129 @@ def _build_stage(run_dir: str, repo_root: str) -> dict | None:
     }
 
 
+def _build_debug(run_dir: str) -> dict | None:
+    """The debug block: everything a scrubbing developer needs on one clock.
+    signals      — decimated tracks recomputed offline from the recorded IMU
+                   stream with the SAME math the organs run (rot_fast is
+                   exactly what the strike detector saw), plus threshold
+                   guides parsed from the session's organs.py snapshot.
+    orientation  — Madgwick quaternions at ~30 Hz for the device cube.
+    organs       — output/organ_events.jsonl verbatim.
+    midi         — note list paired from output/midi_events.jsonl.
+    All times in seconds on the session clock."""
+    import math as _m
+    imu = (_read_jsonl(os.path.join(run_dir, "input", "imu_stream.jsonl"))
+           or _read_jsonl(os.path.join(run_dir, "input", "imu_reads.jsonl")))
+    if not imu:
+        return None
+    try:
+        from ..instinct_tools import Calc
+    except ImportError:
+        return None
+
+    T, ROT, FAST, ADEV, FLU, ELEV = [], [], [], [], [], []
+    QUAT = []
+    pose = None
+    fast = 0.0
+    jerk_ema = amp_ema = 0.0
+    fl = 1.0
+    prev_t = None
+    prev_w = None
+    last_q_t = -1e9
+    for r in imu:
+        t = r["t"] / 1000.0
+        a = (r["ax"], r["ay"], r["az"])
+        g = (r["gx"], r["gy"], r["gz"])
+        rot = _m.sqrt(g[0] ** 2 + g[1] ** 2 + g[2] ** 2)
+        dt = max(1e-3, min(0.05, (t - prev_t) if prev_t else 0.01))
+        prev_t = t
+        fast += min(1.0, dt / 0.04) * (rot - fast)
+        adev = abs(_m.sqrt(a[0] ** 2 + a[1] ** 2 + a[2] ** 2) - 1.0)
+        if pose is None:
+            n = _m.sqrt(sum(x * x for x in a)) or 1.0
+            u = tuple(x / n for x in a)
+            q = [1.0 + u[2], u[1], -u[0], 0.0]
+            qn = _m.sqrt(sum(x * x for x in q)) or 1.0
+            pose = Calc.Madgwick(beta=0.1, q=[x / qn for x in q])
+        w = pose.update(a[0], a[1], a[2], g[0], g[1], g[2], t)
+        if prev_w is not None and dt > 0:
+            j = _m.sqrt(sum((x - y) ** 2 for x, y in zip(w, prev_w))) / dt
+            amp = _m.sqrt(sum(x * x for x in w))
+            k = min(1.0, dt / 0.3)
+            jerk_ema += k * (j - jerk_ema)
+            amp_ema += k * (amp - amp_ema)
+            ratio = jerk_ema / (6.0 + 10.0 * amp_ema)
+            fl = max(0.0, min(1.0, 1.0 / (1.0 + 0.12 * ratio * ratio)))
+        prev_w = w
+        up = pose.up()
+        T.append(round(t, 3)); ROT.append(round(rot)); FAST.append(round(fast))
+        ADEV.append(round(adev, 3)); FLU.append(round(fl, 2))
+        ELEV.append(round(up[1], 2))
+        if t - last_q_t >= 1.0 / 30.0:
+            q = getattr(pose, "q", None)
+            if q is not None:
+                QUAT.append([round(t, 3)] + [round(float(x), 4) for x in q])
+            last_q_t = t
+
+    # decimate signal tracks to ~4k points, keeping local maxima visible
+    n = len(T)
+    stride = max(1, n // 4000)
+    def dec(xs, keep_max=False):
+        if stride == 1:
+            return xs
+        out = []
+        for i in range(0, n, stride):
+            chunk = xs[i:i + stride]
+            out.append(max(chunk) if keep_max else chunk[len(chunk) // 2])
+        return out
+    signals = {"t": dec(T), "rot_fast": dec(FAST, True), "rot": dec(ROT, True),
+               "acc_dev": dec(ADEV, True), "fluency": dec(FLU),
+               "elev": dec(ELEV)}
+
+    # threshold guides from the session's organs.py snapshot (best effort)
+    guides = {}
+    org = os.path.join(run_dir, "organs.py")
+    if not os.path.isfile(org):
+        org = os.path.join(os.path.dirname(os.path.dirname(run_dir)), "organs.py")
+    if os.path.isfile(org):
+        import re as _re
+        src = open(org).read()
+        for name in ("TH_HI", "TH_LO", "MIN_ROT", "TH_Z"):
+            m = _re.search(name + r"\s*=\s*([0-9.]+)", src)
+            if m:
+                guides[name] = float(m.group(1))
+
+    organs = _read_jsonl(os.path.join(run_dir, "output", "organ_events.jsonl"))
+    for ev in organs:
+        ev["t"] = round(ev["t"] / 1000.0, 3)
+
+    # midi notes: pair on/off; 'note' kind carries its own duration
+    notes = []
+    open_notes = {}
+    for ev in _read_jsonl(os.path.join(run_dir, "output", "midi_events.jsonl")):
+        t = ev["t"] / 1000.0
+        k = ev.get("kind")
+        if k == "note":
+            notes.append({"t": round(t, 3), "ch": ev["ch"], "note": ev["note"],
+                          "vel": ev["velocity"], "dur": ev["ms"] / 1000.0})
+        elif k == "note_on":
+            open_notes[(ev["ch"], ev["note"])] = (t, ev.get("velocity", 80))
+        elif k == "note_off":
+            kk = (ev["ch"], ev["note"])
+            if kk in open_notes:
+                t0, v = open_notes.pop(kk)
+                notes.append({"t": round(t0, 3), "ch": ev["ch"],
+                              "note": ev["note"], "vel": v,
+                              "dur": round(t - t0, 3)})
+    for (ch, note), (t0, v) in open_notes.items():   # still sounding at end
+        notes.append({"t": round(t0, 3), "ch": ch, "note": note,
+                      "vel": v, "dur": 0.5})
+    notes.sort(key=lambda x: x["t"])
+
+    return {"signals": signals, "guides": guides, "orientation": QUAT,
+            "organs": organs, "midi": notes}
+
+
 def build_view(run_dir: str, repo_root: str | None = None) -> dict:
     """Bake any run dir into the unified trace.json the tracer consumes."""
     run_dir = os.path.normpath(run_dir)
@@ -418,4 +541,7 @@ def build_view(run_dir: str, repo_root: str | None = None) -> dict:
 
     if stage:
         d["stage"] = stage
+    debug = _build_debug(run_dir)
+    if debug:
+        d["debug"] = debug
     return d

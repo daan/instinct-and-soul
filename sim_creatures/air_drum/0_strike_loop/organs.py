@@ -22,9 +22,12 @@ except ImportError:
     from calc import Calc                               # device (lib/calc.py)
 
 try:
-    from instinct_and_soul.creature_sim.stethoscope import tap as _tap
+    from instinct_and_soul.creature_sim.stethoscope import tap as _tap, probe as _probe
 except ImportError:
     def _tap(kind, **payload):
+        pass
+
+    def _probe(name, value):
         pass
 
 
@@ -110,6 +113,9 @@ class _MotionState:
         self.jerk_ema = 0.0
         self.amp_ema = 0.0
         self.fl01 = 1.0
+        self.head = None            # tilt-compensated heading (rad), or None
+        self.ref_c = 0.0            # slow-centered reference (vector EMA)
+        self.ref_s = 0.0
 
     def feed_accel(self, a):
         if self.pose is None:
@@ -123,6 +129,37 @@ class _MotionState:
                 q, qn = [0.0, 1.0, 0.0, 0.0], 1.0  # upside down: 180 deg about x
             self.pose = Calc.Madgwick(beta=0.1, q=[x / qn for x in q])
         self.acc = a
+
+    def feed_mag(self, m):
+        # tilt-compensated compass, RELATIVE: heading against a slowly
+        # self-centering reference (tau ~45 s), so left/middle/right stay
+        # roughly body-relative as the drummer slowly turns. Absolute north
+        # is never used — mounting and declination cancel in the delta.
+        if self.pose is None:
+            return
+        mx, my, mz = m
+        if mx * mx + my * my + mz * mz < 25.0:      # no/dead mag stream
+            self.head = None
+            return
+        u = self.pose.up()
+        d = mx * u[0] + my * u[1] + mz * u[2]
+        hx, hy = mx - d * u[0], my - d * u[1]
+        if hx * hx + hy * hy < 1e-6:
+            return
+        ang = math.atan2(hx, hy)
+        self.head = ang
+        k = 0.002                                    # ~45 s at 10 Hz mag
+        self.ref_c += k * (math.cos(ang) - self.ref_c)
+        self.ref_s += k * (math.sin(ang) - self.ref_s)
+
+    def heading_delta(self):
+        if self.head is None or (self.ref_c == 0 and self.ref_s == 0):
+            return None
+        ref = math.atan2(self.ref_s, self.ref_c)
+        d = math.degrees(self.head - ref)
+        while d > 180: d -= 360
+        while d < -180: d += 360
+        return d
 
     def feed_gyro(self, g, now_s):
         if self.pose is None or self.acc is None:
@@ -508,7 +545,7 @@ class _TouchState:
         self.ended_flag = None
 
     def feed(self, rot_ema, rot_raw, de_z, g, wacc, vel, flu, now_s):
-        _strike.feed(de_z, rot_ema, now_s)
+        _strike.feed(de_z, rot_raw, now_s)
         if self.last_t is None:
             self.last_t = now_s
             self.base = rot_ema
@@ -656,45 +693,102 @@ class _HandlingImu:
         return g
 
     def getMag(self):
-        return self._real.getMag()
+        m = self._real.getMag()
+        _motion.feed_mag(m)
+        return m
 
 
 # ── Strike (the hit, at hit-time) ────────────────────────────────────────────
 
 class _StrikeState:
-    """An air-drum hit is the sharp accel transient where the wrist snaps —
-    the moment the imagined skin is struck. Fires THE INSTANT the spike
-    crosses threshold (soundable within the reflex loop), carrying the
-    swing's direction-so-far so a drum can be chosen immediately. The
-    completed Touch episode refines identity for the NEXT hit; nothing is
-    ever corrected retroactively — a wrong drum is forgivable, a late one
-    is not."""
+    """A strike is a WRIST FLICK: one sharp burst of rotation. The gyro is
+    the direct sensor of it (hundreds of dps, huge SNR — the accel-z
+    detector missed soft flicks and double-fired on the accelerate/brake
+    pair of a single stroke; calibrated live 2026-07-08). Peak detection:
+    arm when fast rotation crosses TH_HI, track the peak, FIRE the moment
+    rotation falls to 0.65x peak — the snap's own deceleration — then hold
+    through refractory until it settles below TH_LO. One flick, one hit,
+    structurally.
 
-    TH_Z = 4.0            # accel spike, self-baselined sigmas
-    MIN_ROT = 25.0        # must be mid-swing — a table knock is not a hit
-    REFRACTORY_S = 0.12   # fastest credible hand (~8 hits/s)
+    The hit carries the aim: vert01 (chop vs sweep), elev01 (stick pitch
+    from gravity — absolute, drift-free: high/mid/low row) and
+    head_delta_deg (magnetometer, vs a slowly self-centering reference:
+    left/middle/right — None when no mag streams)."""
+
+    # Calibrated 2026-07-08 against labeled session 20260708_085130
+    # (10 gentle / 10 hard / ~15 s non-strike motion with ~10 strikes):
+    # arm at 400 dps (plateau 300-450), 30 ms micro-scan for dynamics,
+    # settle below 200 to re-arm -> scores [10, 10, 11] and fires a median
+    # 50-80 ms EARLIER than peak-decay (the responsiveness fix: the sound
+    # lands at the start of the snap, not after it). Dynamics from the
+    # scan: gentle flicks ~600 dps, hard ~1000. The earlier low thresholds
+    # SATURATED during motion (never re-armed) and swallowed strikes.
+    TH_HI = 400.0         # dps: arm — a flick, not a carry
+    TH_LO = 200.0         # settle level to re-arm
+    SCAN_S = 0.03         # micro-scan: fire when rise stalls or this elapses
+    REFRACTORY_S = 0.12
 
     def __init__(self):
+        self.fast = 0.0
+        self.last_t = None
+        self.state = 0        # 0 idle, 1 scanning(peak), 2 cooling
+        self.peak = 0.0
+        self.arm_t = 0.0
         self.last_hit_t = -1e9
         self.hit_flag = None
         self.last_ = None
         self.n = 0
+        self._probe_t = -1e9
+        self._peak_probe = 0.0
 
-    def feed(self, de_z, rot_ema, now_s):
-        if (de_z >= self.TH_Z and rot_ema >= self.MIN_ROT
-                and now_s - self.last_hit_t >= self.REFRACTORY_S):
-            self.last_hit_t = now_s
-            t = _touch
-            tot = (t.vsum + t.hsum) if t.in_ep else 0.0
-            vert = t.vsum / tot if tot > 1e-6 else 0.5
-            g = _Familiar().guess()
-            gid = g[0] if (g and g[1] >= 0.3) else None
-            hit = [int(now_s * 1000), round(de_z, 1), round(vert, 2),
-                   int(rot_ema), gid]
-            self.last_ = hit
-            self.hit_flag = hit
-            self.n += 1
-            _tap("strike", hit=hit)
+    def feed(self, de_z, rot_raw, now_s):
+        if self.last_t is None:
+            self.last_t = now_s
+        dt = max(0.0, min(0.05, now_s - self.last_t))
+        self.last_t = now_s
+        self.fast += min(1.0, dt / 0.04) * (rot_raw - self.fast)
+
+        self._peak_probe = max(self._peak_probe, self.fast)
+        if now_s - self._probe_t > 0.1:
+            _probe("rot_fast_peak", self._peak_probe)
+            u = _motion.pose.up() if _motion.pose else (0, 0, 1)
+            _probe("elev", u[1])
+            hd = _motion.heading_delta()
+            if hd is not None:
+                _probe("head_delta", hd)
+            self._probe_t = now_s
+            self._peak_probe = 0.0
+
+        if self.state == 0:
+            if self.fast > self.TH_HI and now_s - self.last_hit_t >= self.REFRACTORY_S:
+                self.state = 1
+                self.peak = self.fast
+                self.arm_t = now_s
+        elif self.state == 1:                     # micro-scan: catch the rise
+            if self.fast > self.peak:
+                self.peak = self.fast
+            if now_s - self.arm_t >= self.SCAN_S or self.fast < self.peak * 0.95:
+                self._fire(now_s)
+                self.state = 2
+        else:                                     # cooling: settle to re-arm
+            if self.fast < self.TH_LO:
+                self.state = 0
+
+    def _fire(self, now_s):
+        self.last_hit_t = now_s
+        t = _touch
+        tot = (t.vsum + t.hsum) if t.in_ep else 0.0
+        vert = t.vsum / tot if tot > 1e-6 else 0.5
+        u = _motion.pose.up() if _motion.pose else (0.0, 0.0, 1.0)
+        hd = _motion.heading_delta()
+        g = _Familiar().guess()
+        gid = g[0] if (g and g[1] >= 0.3) else None
+        hit = [int(now_s * 1000), int(self.peak), round(vert, 2),
+               round(u[1], 2), round(hd, 0) if hd is not None else None, gid]
+        self.last_ = hit
+        self.hit_flag = hit
+        self.n += 1
+        _tap("strike", hit=hit)
 
 
 _strike = _StrikeState()
@@ -704,10 +798,12 @@ class _Strike:
     """The hit, at hit-time — the drum's fastest sense."""
 
     def hit(self):
-        """[t_ms, vigor_z, vert01_so_far, rot_dps, guess_id|None] once, the
-        moment a strike lands. Consumed on read — sound it NOW; identity
-        (guess_id, from gestures seen 3+ times) may be None early in a
-        session or a swing."""
+        """[t_ms, vigor_dps, vert01, elev01, head_delta_deg|None,
+        guess_id|None] once, the moment the flick snaps. Consumed on read —
+        sound it NOW. vigor_dps: the flick's peak rotation (~200 gentle,
+        600+ hard). elev01: stick pitch, -1 pointing down .. +1 pointing up.
+        head_delta_deg: degrees left(-)/right(+) of your recent average
+        facing, None when the magnetometer isn't streaming."""
         f = _strike.hit_flag
         _strike.hit_flag = None
         return f
