@@ -24,16 +24,23 @@ KINDS = (
 )
 
 
+def _parse_name(path: str):
+    """(t_seconds, version) from an artifact filename, either store format.
+    Format 2 (store_format: 2): {t_ms:08d}_v{n:03d}.ext -> (t_ms/1000, n).
+    Format 1 (legacy):          {seq:03d}_{t_s}.ext     -> (t_s, seq)."""
+    stem = os.path.basename(path).rsplit(".", 1)[0]
+    a, _, b = stem.partition("_")
+    if b.startswith("v"):
+        return int(a) / 1000.0, int(b[1:])
+    return float(b or 0), int(a)
+
+
 def _filename_ts(path: str) -> float:
-    """Pull the unix-seconds suffix out of a `NNN_TS.ext` filename."""
-    name = os.path.basename(path)
-    stem = name.rsplit(".", 1)[0]
-    return float(stem.split("_", 1)[1])
+    return _parse_name(path)[0]
 
 
 def _filename_seq(path: str) -> int:
-    name = os.path.basename(path)
-    return int(name.split("_", 1)[0])
+    return _parse_name(path)[1]
 
 
 class Trace:

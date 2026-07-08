@@ -103,6 +103,28 @@ def load_last_state(session_dir):
 
 # ── Version store ─────────────────────────────────────────────────────────
 
+# Store format 2 (2026-07): artifact filenames are
+#     {t_ms:08d}_v{n:03d}.{ext}
+# — creature-clock milliseconds first (lexicographic = chronological), then a
+# PER-TYPE version counter (instinct v1 = the seed, v2 = the first rewrite).
+# Format 1 named files {global_seq:03d}_{t_s} — the global counter made the
+# soul's self-narrative lie ("instinct v4" was its first rewrite). The global
+# seq survives as an event-ordering field inside reflection records; readers
+# discriminate formats via session.json's "store_format" (absent = 1).
+STORE_FORMAT = 2
+
+
+def parse_version_filename(path):
+    """(t, version) from either store format's artifact filename.
+    Format 2: {t_ms}_v{n}  ->  (t_ms/1000, n).  Format 1: {seq}_{t_s} ->
+    (t_s, seq). Lexicographic order is chronological in both."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    a, _, b = stem.partition("_")
+    if b.startswith("v"):
+        return int(a) / 1000.0, int(b[1:])
+    return float(b or 0), int(a)
+
+
 class VersionStore:
     """Writes per-session artifacts (instinct, experience, reflections, etc.)."""
 
@@ -127,9 +149,20 @@ class VersionStore:
                 suffix += 1
         self.base = base
         self.session_id = sid
-        self.seq = 0
+        self.seq = 0            # global event counter (ordering, cross-refs)
+        self._counts = {}       # per-type version counters (filenames, souls)
         for subdir in ("instinct", "experience", "reflections", "crashes", "memory"):
             os.makedirs(os.path.join(self.base, subdir), exist_ok=True)
+
+    def next_version(self, kind):
+        """The next per-type version number: instinct v1, v2, … reflection
+        n1, n2, … Counted separately per kind, unlike the global seq."""
+        self._counts[kind] = self._counts.get(kind, 0) + 1
+        return self._counts[kind]
+
+    def _vpath(self, subdir, n, ext):
+        return os.path.join(self.base, subdir, "{:08d}_v{:03d}.{}".format(
+            int(self._now() * 1000.0), n, ext))
 
     def save_session_config(self, system_prompt, character, llm_info=None,
                             resumed_from=None, provenance="device"):
@@ -137,6 +170,7 @@ class VersionStore:
         with open(path, "w") as f:
             json.dump({
                 "session_id": self.session_id,
+                "store_format": STORE_FORMAT,
                 "ts": self._now(),
                 "provenance": provenance,
                 "resumed_from": resumed_from,
@@ -160,20 +194,20 @@ class VersionStore:
         self.seq += 1
         return self.seq
 
-    def save_instinct(self, seq, code):
-        path = os.path.join(self.base, "instinct", "{:03d}_{}.py".format(seq, int(self._now())))
+    def save_instinct(self, n, code):
+        path = self._vpath("instinct", n, "py")
         with open(path, "w") as f:
             f.write(code)
         return path
 
-    def save_experience(self, seq, text):
-        path = os.path.join(self.base, "experience", "{:03d}_{}.md".format(seq, int(self._now())))
+    def save_experience(self, n, text):
+        path = self._vpath("experience", n, "md")
         with open(path, "w") as f:
             f.write(text)
         return path
 
-    def save_reflection(self, seq, data):
-        path = os.path.join(self.base, "reflections", "{:03d}_{}.json".format(seq, int(self._now())))
+    def save_reflection(self, n, data):
+        path = self._vpath("reflections", n, "json")
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
         return path
@@ -184,14 +218,14 @@ class VersionStore:
             json.dump(totals, f, indent=2)
         return path
 
-    def save_crash(self, seq, error):
-        path = os.path.join(self.base, "crashes", "{:03d}_{}.txt".format(seq, int(self._now())))
+    def save_crash(self, n, error):
+        path = self._vpath("crashes", n, "txt")
         with open(path, "w") as f:
             f.write(error)
         return path
 
-    def save_memory(self, seq, payload):
-        path = os.path.join(self.base, "memory", "{:03d}_{}.json".format(seq, int(self._now())))
+    def save_memory(self, n, payload):
+        path = self._vpath("memory", n, "json")
         with open(path, "w") as f:
             f.write(payload)
         return path
@@ -268,7 +302,7 @@ class ReflectionLoop:
 
         self.store = VersionStore(creature.logs_dir, now=now)
         self.buffer = MessageBuffer(
-            drop_after_instinct_change=True,
+            drop_after_instinct_change=False,   # journal semantics: never drop
             spare_operator=True,
         )
 
@@ -294,12 +328,12 @@ class ReflectionLoop:
             self.llm_info, self.resumed_from, provenance=provenance,
         )
         self.store.save_seeds(creature)
-        seq = self.store.next_seq()
-        self.instinct_version = seq
-        self.store.save_instinct(seq, self.current_instinct)
-        seq = self.store.next_seq()
-        self.experience_version = seq
-        self.store.save_experience(seq, self.current_experience)
+        # Per-type versions: the seed (or inherited state) is instinct v1 /
+        # experience v1 of this session; the first rewrite will be v2.
+        self.instinct_version = self.store.next_version("instinct")
+        self.store.save_instinct(self.instinct_version, self.current_instinct)
+        self.experience_version = self.store.next_version("experience")
+        self.store.save_experience(self.experience_version, self.current_experience)
 
     # ── Properties ────────────────────────────────────────────────────
 
@@ -337,10 +371,10 @@ class ReflectionLoop:
     def add_crash(self, error_msg: str) -> None:
         self.last_crashed = True
         self.last_crash_msg = error_msg
-        self.store.save_crash(self.store.next_seq(), error_msg)
+        self.store.save_crash(self.store.next_version("crash"), error_msg)
 
     def add_memory_snapshot(self, payload: str) -> None:
-        self.store.save_memory(self.store.next_seq(), payload)
+        self.store.save_memory(self.store.next_version("memory"), payload)
 
     def needs_reflection(self) -> bool:
         if (self.max_reflections is not None
@@ -449,9 +483,11 @@ class ReflectionLoop:
             except Exception:
                 pass
 
-            seq = self.store.next_seq()
+            seq = self.store.next_seq()                    # global event id
+            rn = self.store.next_version("reflection")     # reflection #rn
             reflection = {
                 "seq": seq,
+                "n": rn,
                 "ts": self._now(),
                 "started_at": started_at,
                 "messages_since_last": messages,
@@ -469,14 +505,14 @@ class ReflectionLoop:
 
             if new_instinct is not None:
                 self.current_instinct = new_instinct
-                iseq = self.store.next_seq()
-                self.instinct_version = iseq
-                self.store.save_instinct(iseq, new_instinct)
-                reflection["instinct_version_out"] = iseq
+                iv = self.store.next_version("instinct")
+                self.instinct_version = iv
+                self.store.save_instinct(iv, new_instinct)
+                reflection["instinct_version_out"] = iv
 
                 if self._on_instinct_deploy is not None:
                     try:
-                        await self._on_instinct_deploy(new_instinct, iseq)
+                        await self._on_instinct_deploy(new_instinct, iv)
                     except Exception as e:
                         self._on_log("instinct deploy callback raised: {}".format(e), "bold red")
 
@@ -487,13 +523,13 @@ class ReflectionLoop:
 
             if new_experience is not None:
                 self.current_experience = new_experience
-                eseq = self.store.next_seq()
-                self.experience_version = eseq
-                self.store.save_experience(eseq, new_experience)
-                reflection["experience_version_out"] = eseq
-                self._on_log("updated experience v{}".format(eseq), "cyan")
+                ev = self.store.next_version("experience")
+                self.experience_version = ev
+                self.store.save_experience(ev, new_experience)
+                reflection["experience_version_out"] = ev
+                self._on_log("updated experience v{}".format(ev), "cyan")
 
-            self.store.save_reflection(seq, reflection)
+            self.store.save_reflection(rn, reflection)
 
         except Exception as e:
             # Many failure modes stringify to "" (asyncio.TimeoutError, some
@@ -503,8 +539,10 @@ class ReflectionLoop:
                 detail = "LLM call timed out after {:.0f}s".format(LLM_HARD_TIMEOUT_S)
             error_msg = "{}: {}".format(type(e).__name__, detail)
             fseq = self.store.next_seq()
-            self.store.save_reflection(fseq, {
+            fn = self.store.next_version("reflection")
+            self.store.save_reflection(fn, {
                 "seq": fseq,
+                "n": fn,
                 "ts": self._now(),
                 "started_at": started_at,
                 "messages_since_last": messages,

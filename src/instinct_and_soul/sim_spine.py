@@ -22,6 +22,7 @@ import time
 import traceback
 
 from .creature_sim import devices
+from .creature_sim import stethoscope
 from .creature_sim.fake_imu import load_imu_source, _CapturingImu
 from .creature_sim.osc_imu import OSC_PORT, OscImuSource, _LiveImu
 from .creature_sim.fake_speaker import _CapturingSpeaker
@@ -149,7 +150,8 @@ class SimSpine:
                  max_reflections: int | None = None,
                  osc_port: int | None = None,
                  reflect_every: float | None = None,
-                 live_audio: bool = False):
+                 live_audio: bool = False,
+                 no_scope: bool = False):
         self.creature = creature
         # Live mode: the IMU is a real device streaming OSC; there is no clip,
         # so the session is open-ended (--duration is an optional cap) and the
@@ -271,6 +273,14 @@ class SimSpine:
         self._stop_event = asyncio.Event()
         self._stopping = False   # suppress auto-refire once we're shutting down
 
+        # Stethoscope (ARCHITECTURE.md movement 3): organ events are always
+        # recorded to output/organ_events.jsonl; the UDP-OSC live emit is the
+        # advisory EEG any listener may attach to.
+        self._organ_objs = {}
+        stethoscope.attach(self.clock, session_dir,
+                           osc_target=None if no_scope else ("127.0.0.1", 9001))
+        self._last_probe_t = 0.0
+
     # ── Loop callbacks ────────────────────────────────────────────────
 
     def _log(self, msg: str, style: str = None) -> None:
@@ -355,6 +365,7 @@ class SimSpine:
             before = set(scope)
             self._organs_attach(scope)
             organ_names = tuple(set(scope) - before)
+            self._organ_objs = {k: scope[k] for k in organ_names}
         # The soul may `import` names the sim injects into scope (asyncio shim,
         # Imu/Synth/Mem/Calc/M5, organ senses) — valid on the real M5/MicroPython,
         # but in the sim a real import shadows the shim or ModuleNotFoundError's.
@@ -493,6 +504,29 @@ class SimSpine:
                 elif stream_lost and age is not None and age < 0.5:
                     stream_lost = False
                     self._log("osc: stream resumed", "green")
+            # Stethoscope levels: poll the organs' non-consuming reads ~4x/s
+            # and whisper them to any live listener (the record derives these
+            # from its own streams — probes are advisory by contract).
+            if self.clock.now_ms - self._last_probe_t > 250.0:
+                self._last_probe_t = self.clock.now_ms
+                for nm, obj in self._organ_objs.items():
+                    try:
+                        if nm == "Hunger":
+                            stethoscope.probe("hunger", obj.level())
+                            stethoscope.probe("startle", obj.startle())
+                        elif nm == "Motion":
+                            stethoscope.probe("fluency", obj.fluency())
+                        elif nm == "Handling":
+                            stethoscope.probe("alone_s", obj.alone_s())
+                        elif nm == "Familiar":
+                            stethoscope.probe("gestures_known", float(len(obj.gestures())))
+                            g = obj.guess()
+                            if g:
+                                stethoscope.probe("guess_conf", g[1])
+                        elif nm == "Strike":
+                            stethoscope.probe("strikes", float(obj.count()))
+                    except Exception:
+                        pass
             # Cadence tick: messages that buffered during the throttle window
             # get their reflection the moment the window opens, even if the
             # instinct doesn't send again right then.
@@ -528,6 +562,7 @@ class SimSpine:
             await self.loop.reflect()
 
         self.imu.close()
+        stethoscope.detach()
         if self.osc_source is not None:
             self.osc_source.close()
         self.speaker.close()
@@ -573,6 +608,9 @@ def main():
                    help="Reflect at most once per this many seconds (messages batch "
                         "up in between; crashes bypass it). Defaults to 45 in --osc "
                         "mode, off otherwise.")
+    p.add_argument("--no-scope", action="store_true",
+                   help="Disable the stethoscope's live UDP-OSC emit (:9001). "
+                        "organ_events.jsonl is always recorded regardless.")
     p.add_argument("--live-audio", action=argparse.BooleanOptionalAction, default=None,
                    help="Play MIDI live through fluidsynth while also logging it. "
                         "Default: on with --osc, off otherwise (so replay runs can "
@@ -657,7 +695,7 @@ def main():
                    reflection_time=args.reflection_time,
                    max_reflections=args.max_reflections,
                    osc_port=args.osc, reflect_every=reflect_every,
-                   live_audio=live_audio)
+                   live_audio=live_audio, no_scope=args.no_scope)
     print(f"session:  {sim.loop.store.base}", file=sys.stderr)
     if sim.loop.resumed_from:
         print(f"resumed from: {sim.loop.resumed_from}", file=sys.stderr)

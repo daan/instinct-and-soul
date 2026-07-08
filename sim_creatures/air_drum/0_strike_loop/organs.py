@@ -21,6 +21,12 @@ try:
 except ImportError:
     from calc import Calc                               # device (lib/calc.py)
 
+try:
+    from instinct_and_soul.creature_sim.stethoscope import tap as _tap
+except ImportError:
+    def _tap(kind, **payload):
+        pass
+
 
 # ── Ear (verbatim from the lala_ears line) ──────────────────────────────────
 
@@ -227,6 +233,7 @@ class _HandlingState:
         elif self.pending is None or self.pending[0] != cand:
             self.pending = (cand, now_s)
         elif now_s - self.pending[1] >= _DWELL_S:
+            _tap("state", frm=self.state, to=cand)
             self.state = cand
             self.state_since = self.pending[1]
             self.pending = None
@@ -247,6 +254,7 @@ class _HandlingState:
             elif now_s - self.face_cand[1] >= 1.0 and cand_face != self.face_:
                 if self.face_ is not None:
                     self.turned_flag = (self.face_, cand_face)
+                    _tap("turned", frm=self.face_, to=cand_face)
                 self.face_ = cand_face
 
         _touch.feed(self.rot_ema, rot, self.de_base.z(
@@ -361,8 +369,12 @@ class _FamiliarState:
             best['n'] += 1
             best['last_ms'] = ep[0]
             self.last_ = [best['id'], best['n'], round(min(1.0, bd / self.R), 2)]
+            _tap("familiar", id=best['id'], n=best['n'],
+                 dist=round(bd, 2), R=self.R)
             if best['n'] >= self.KNOWN_AT:
                 self.recognized_flag = list(self.last_)
+                _tap("recognized", id=best['id'], n=best['n'],
+                     dist=round(bd, 2))
         else:
             if len(self.gs) >= self.MAX_G:
                 self.gs.sort(key=lambda g: (g['n'], g['last_ms']))
@@ -370,6 +382,8 @@ class _FamiliarState:
             self.gs.append({'id': self.next_id, 'v': v, 'n': 1,
                             'last_ms': ep[0], 'face': face})
             self.last_ = [self.next_id, 1, 0.0]
+            _tap("familiar_new", id=self.next_id,
+                 nearest=round(bd, 2) if best is not None else None, R=self.R)
             self.next_id += 1
         self._reunify()
 
@@ -392,6 +406,7 @@ class _FamiliarState:
                         old['v'][k] += w * (new['v'][k] - old['v'][k])
                     old['n'] += new['n']
                     old['last_ms'] = max(old['last_ms'], new['last_ms'])
+                    _tap("reunify", kept=old['id'], merged=new['id'], d=round(d, 2))
                     self.gs.remove(new)
                     if self.last_ and self.last_[0] == new['id']:
                         self.last_ = [old['id'], old['n'], self.last_[2]]
@@ -566,6 +581,7 @@ class _TouchState:
                               round(self.path, 2), round(curl, 2), round(flu, 2)]
                         self.last_ep = ep
                         self.ended_flag = ep
+                        _tap("touch", ep=ep)
                         _familiar.observe(ep, _handling.face_)
             else:
                 self.below_since = None
@@ -678,6 +694,7 @@ class _StrikeState:
             self.last_ = hit
             self.hit_flag = hit
             self.n += 1
+            _tap("strike", hit=hit)
 
 
 _strike = _StrikeState()

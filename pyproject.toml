@@ -33,6 +33,7 @@ bake-midi = "instinct_and_soul.creature_sim.bake_midi:main"
 bake-video = "instinct_and_soul.creature_sim.bake_video:main"
 sim-spine = "instinct_and_soul.sim_spine:main"
 osc-send = "instinct_and_soul.creature_sim.osc_imu:send_main"
+stetho = "instinct_and_soul.creature_sim.stetho_tui:main"
 bake-mocap = "instinct_and_soul.mocaplib.extract:main"
 skeleton = "instinct_and_soul.mocaplib.serve:main"
 

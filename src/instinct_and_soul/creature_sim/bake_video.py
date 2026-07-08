@@ -38,7 +38,9 @@ def resolve_instinct(creature_dir, selector):
         return open(selector).read(), os.path.splitext(os.path.basename(selector))[0]
     if ":" in selector:
         sid, seq = selector.split(":", 1)
-        m = sorted(glob.glob(os.path.join(logs, sid, "instinct", f"{int(seq):03d}_*.py")))
+        # match either store format: v2 `*_v{n:03d}.py` or v1 `{n:03d}_*.py`
+        m = (sorted(glob.glob(os.path.join(logs, sid, "instinct", f"*_v{int(seq):03d}.py")))
+             or sorted(glob.glob(os.path.join(logs, sid, "instinct", f"{int(seq):03d}_*.py"))))
         if not m:
             raise SystemExit(f"no instinct {seq} in session {sid}")
         return open(m[-1]).read(), f"{sid}_v{int(seq)}"
@@ -48,7 +50,8 @@ def resolve_instinct(creature_dir, selector):
     insts = sorted(glob.glob(os.path.join(sess, "instinct", "*.py")))
     if not insts:
         raise SystemExit(f"no instinct files in {sess}")
-    seq = int(os.path.basename(insts[-1]).split("_")[0])
+    from ..reflection import parse_version_filename
+    seq = parse_version_filename(insts[-1])[1]
     return open(insts[-1]).read(), f"{os.path.basename(sess)}_v{seq}"
 
 
