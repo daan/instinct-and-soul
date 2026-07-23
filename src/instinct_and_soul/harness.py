@@ -21,6 +21,7 @@ log helpers, command history (up/down arrows), quit behavior, and message routin
 """
 
 import asyncio
+import re
 import time
 import websockets
 from textual.app import App
@@ -69,12 +70,18 @@ class TuneAppBase(App):
         import os as _os
         self.locked_ip = _os.environ.get("INSTINCT_CREATURE_IP") or None
         self._rejected_seen = set()
+        # Every log_msg line is mirrored to a plain-text session file, so
+        # events that scroll away in the TUI (reboots, crashes) can be
+        # grepped afterwards: grep BOOTED tune-*.log
+        self._log_path = time.strftime("tune-%Y%m%d-%H%M%S.log")
+        self._log_file = open(self._log_path, "a")
 
     def on_mount(self) -> None:
         self.run_worker(self.ws_server(), exclusive=False)
         self.set_interval(1, self.update_status)
         suffix = " — {}".format(self.STATUS_LABEL) if self.STATUS_LABEL else ""
         self.log_msg("tuner: listening on port {}{}".format(PORT, suffix))
+        self.log_msg("session log: {}".format(self._log_path), style="dim")
         # mouse=False means clicks can't focus widgets, so set focus on the
         # input field at startup. Keystrokes go straight to the prompt.
         try:
@@ -84,6 +91,13 @@ class TuneAppBase(App):
 
     def log_msg(self, msg, style=""):
         ts = time.strftime("%H:%M:%S")
+        if self._log_file is not None:
+            try:
+                plain = re.sub(r"\[/?[a-z ]+\]", "", str(msg))
+                self._log_file.write("{}  {}\n".format(ts, plain))
+                self._log_file.flush()
+            except Exception:
+                pass
         try:
             log = self.query_one("#log", RichLog)
         except Exception:
@@ -168,8 +182,16 @@ class TuneAppBase(App):
         except Exception:
             pass
         finally:
-            self.board_ws = None
-            self.log_msg("board disconnected", style="red")
+            # A fast-reconnecting board (reboot loop) registers its NEW
+            # connection before the old handler unwinds — only the handler
+            # that still owns board_ws may clear it, or the tuner shows
+            # "disconnected" while the new connection streams happily
+            # (diagnosed 2026-07-18 on tilt).
+            if self.board_ws is ws:
+                self.board_ws = None
+                self.log_msg("board disconnected", style="red")
+            else:
+                self.log_msg("stale connection closed (board reconnected)", style="dim")
 
     def on_board_message(self, msg):
         """Default: log the message. Override for richer parsing."""
@@ -186,6 +208,12 @@ class TuneAppBase(App):
                 pass
         if self._ws_server is not None:
             self._ws_server.close()
+        if self._log_file is not None:
+            try:
+                self._log_file.close()
+            except Exception:
+                pass
+            self._log_file = None
         self.exit()
 
     async def ws_server(self):

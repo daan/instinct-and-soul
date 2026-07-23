@@ -18,6 +18,17 @@ h1 {
 }
 .help { font-size: 12px; color: #888; }
 
+#run-picker { display: flex; gap: 6px; margin: 2px 0 6px; }
+#run-picker select {
+  font: 12px ui-monospace, monospace;
+  color: #333;
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 2px 4px;
+  max-width: 340px;
+}
+
 .legend {
   display: flex;
   gap: 14px;
@@ -50,6 +61,7 @@ svg {
   height: 320px;
 }
 body.has-imu svg { height: 440px; }   /* room for the accel + gyro lanes */
+body.has-debug svg { height: 640px; }  /* + signals / organs / midi lanes */
 
 /* IMU lanes: x/y/z traces over the shared time axis. */
 .imu-line { fill: none; stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 0.85; }
@@ -286,3 +298,12 @@ body.has-imu svg { height: 440px; }   /* room for the accel + gyro lanes */
 }
 #stage-vol-bar { height: 100%; width: 0%; background: #2a9; }
 #stage-audio { display: none; }
+
+
+/* ---------- debug lanes (in the main timeline) ---------- */
+.dbg-guide { stroke: #d66; stroke-dasharray: 4 3; stroke-width: 1; }
+.dbg-guide-label { font: 9px monospace; fill: #d66; }
+.dbg-rotfast { fill: none; stroke: #4ad; stroke-width: 1.4; }
+.dbg-rot { fill: none; stroke: #4ad; stroke-width: 0.6; opacity: 0.35; }
+.dbg-organ { cursor: pointer; }
+.dbg-organ:hover { opacity: 0.7; }

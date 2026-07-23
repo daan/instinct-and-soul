@@ -442,9 +442,11 @@ class ReflectionLoop:
             # a stuck connection has been seen to hang for many minutes. wait_for
             # guarantees the reflection fails (and the run continues) instead of
             # freezing the creature forever mid-reflection.
+            _gen_t0 = time.monotonic()
             result = await asyncio.wait_for(
                 self.llm.call(self.creature.system_prompt, reflection_prompt),
                 timeout=LLM_HARD_TIMEOUT_S)
+            gen_seconds = round(time.monotonic() - _gen_t0, 3)  # wall-clock generation time
             reply = result["text"]
             usage = result["usage"]
             stop_reason = result.get("stop_reason")
@@ -497,6 +499,7 @@ class ReflectionLoop:
                 "n": rn,
                 "ts": self._now(),
                 "started_at": started_at,
+                "gen_seconds": gen_seconds,
                 "messages_since_last": messages,
                 "instinct_version_in": self.instinct_version,
                 "crashed": crashed,

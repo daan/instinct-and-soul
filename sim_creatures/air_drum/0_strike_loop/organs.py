@@ -110,12 +110,30 @@ class _MotionState:
         # braced motion low, regardless of how big the movement is.
         self.prev_wacc = None
         self.last_gyro_t = None
+        # aim: stick pitch sampled ONLY while the wrist is quiet (<200 dps),
+        # EMA tau 0.25 s. The strike flick IS a pitch rotation of the stick
+        # axis, so pitch during the whip reads the whip phase, not the aim
+        # (instant elev at hits: sd 0.41, swings -0.9..1.0). The aim is where
+        # the stick RESTS between whips. Quiet-gating beats an always-on slow
+        # EMA: tau-1.0 tracked plateaus but smeared sweeps/dips and lagged ~1 s;
+        # quiet-gated tau 0.25 scores 9/9 on the 3-3-3 (20260709_110507),
+        # renders the high->low sweep as a glissando (20260709_115927), and
+        # keeps the block structure + low dip of 20260709_074041. During a
+        # fast run there is no quiet, so a run keeps its drum.
+        self.rot_fast = 0.0
+        self.elev_slow = None
         self.jerk_ema = 0.0
         self.amp_ema = 0.0
         self.fl01 = 1.0
         self.head = None            # tilt-compensated heading (rad), or None
         self.ref_c = 0.0            # slow-centered reference (vector EMA)
         self.ref_s = 0.0
+        # aim heading: same whip problem as pitch — the flick corrupts the
+        # tilt-compensation for an instant, so hit-time heading throws strays
+        # (session 20260709_074041: -116 deg inside a firmly-right passage).
+        # Faster vector EMA (~0.5-1 s across 10-25 Hz mag rates) = the aim.
+        self.aim_c = None
+        self.aim_s = 0.0
 
     def feed_accel(self, a):
         if self.pose is None:
@@ -148,15 +166,22 @@ class _MotionState:
             return
         ang = math.atan2(hx, hy)
         self.head = ang
+        c, s = math.cos(ang), math.sin(ang)
+        if self.aim_c is None:
+            self.aim_c, self.aim_s = c, s
+        ka = 0.08                                    # aim: ~0.5-1 s
+        self.aim_c += ka * (c - self.aim_c)
+        self.aim_s += ka * (s - self.aim_s)
         k = 0.002                                    # ~45 s at 10 Hz mag
-        self.ref_c += k * (math.cos(ang) - self.ref_c)
-        self.ref_s += k * (math.sin(ang) - self.ref_s)
+        self.ref_c += k * (c - self.ref_c)
+        self.ref_s += k * (s - self.ref_s)
 
     def heading_delta(self):
-        if self.head is None or (self.ref_c == 0 and self.ref_s == 0):
+        if self.head is None or self.aim_c is None or \
+           (self.ref_c == 0 and self.ref_s == 0):
             return None
         ref = math.atan2(self.ref_s, self.ref_c)
-        d = math.degrees(self.head - ref)
+        d = math.degrees(math.atan2(self.aim_s, self.aim_c) - ref)
         while d > 180: d -= 360
         while d < -180: d += 360
         return d
@@ -167,8 +192,17 @@ class _MotionState:
         a = self.acc
         self.wacc = self.pose.update(a[0], a[1], a[2], g[0], g[1], g[2], now_s)
         self.vel = self.flow.update(self.wacc[0], self.wacc[1], self.wacc[2], now_s)
+        e = self.pose.up()[1]
         if self.last_gyro_t is not None:
             dt = now_s - self.last_gyro_t
+            if 0 < dt < 0.1:
+                rot = math.sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2])
+                self.rot_fast += min(1.0, dt / 0.04) * (rot - self.rot_fast)
+                if self.rot_fast < 200.0:          # wrist quiet: this IS the aim
+                    if self.elev_slow is None:
+                        self.elev_slow = e
+                    else:
+                        self.elev_slow += min(1.0, dt / 0.25) * (e - self.elev_slow)
             if 0 < dt < 0.1 and self.prev_wacc is not None:
                 j = math.sqrt(sum((x - y) ** 2
                                   for x, y in zip(self.wacc, self.prev_wacc))) / dt
@@ -545,7 +579,7 @@ class _TouchState:
         self.ended_flag = None
 
     def feed(self, rot_ema, rot_raw, de_z, g, wacc, vel, flu, now_s):
-        _strike.feed(de_z, rot_raw, now_s)
+        _strike.feed(de_z, rot_raw, g, now_s)
         if self.last_t is None:
             self.last_t = now_s
             self.base = rot_ema
@@ -710,8 +744,22 @@ class _StrikeState:
     through refractory until it settles below TH_LO. One flick, one hit,
     structurally.
 
+    Fast runs (hits ~350-450 ms apart) never settle below TH_LO between
+    hits, so waiting for TH_LO alone swallowed the tail of every triple.
+    The way back in is DIRECTION: a rebound is the wrist recovering, so it
+    rotates OPPOSITE to the strike (labeled sessions: every true hit +y,
+    every rebound -y, no exceptions), while the next hit of a run is the
+    same flick again. During cooling a burst above TH_HI re-arms early iff
+    the signal dipped since the last hit (RE_DIP) and the rotation axis
+    points WITH the last strike (RE_ALIGN) — rebounds sit near dot -0.9
+    and can never pass. Known tradeoff: vigorous non-strike waving with
+    strike-aligned swings can fire; in real playing (triples session
+    20260708_134410) the gate produced zero false hits.
+
     The hit carries the aim: vert01 (chop vs sweep), elev01 (stick pitch
-    from gravity — absolute, drift-free: high/mid/low row) and
+    from gravity — absolute, drift-free: high/mid/low row; sampled only
+    while the wrist is QUIET, because the flick itself whips the pitch
+    through 60-90 deg — the aim is where the stick rests between whips) and
     head_delta_deg (magnetometer, vs a slowly self-centering reference:
     left/middle/right — None when no mag streams)."""
 
@@ -727,6 +775,12 @@ class _StrikeState:
     TH_LO = 200.0         # settle level to re-arm
     SCAN_S = 0.03         # micro-scan: fire when rise stalls or this elapses
     REFRACTORY_S = 0.12
+    # Direction-gated early re-arm (calibrated 2026-07-09 vs triples session
+    # 20260708_134410: 22/22 hits, was 16; labeled session unchanged 10/10/11):
+    RE_DIP = 300.0        # must dip below this since the last hit (a new burst,
+                          # not the same one: inter-hit valleys measured 213-283)
+    RE_ALIGN = 0.4        # dot(axis, last strike axis) — repeats measured
+                          # 0.53-0.98, rebounds ~-0.9
 
     def __init__(self):
         self.fast = 0.0
@@ -740,19 +794,36 @@ class _StrikeState:
         self.n = 0
         self._probe_t = -1e9
         self._peak_probe = 0.0
+        self.ex = self.ey = self.ez = 0.0   # gyro vector EMA (direction only —
+                                            # its magnitude cancels on reversals)
+        self.low = 1e9        # lowest fast since the last hit
+        self.hit_dir = None   # unit rotation axis of the last strike
+        self._pdir = None     # axis at the running peak while scanning
 
-    def feed(self, de_z, rot_raw, now_s):
+    def _dir(self):
+        m = math.sqrt(self.ex * self.ex + self.ey * self.ey + self.ez * self.ez)
+        if m < 1e-9:
+            return None
+        return (self.ex / m, self.ey / m, self.ez / m)
+
+    def feed(self, de_z, rot_raw, g, now_s):
         if self.last_t is None:
             self.last_t = now_s
         dt = max(0.0, min(0.05, now_s - self.last_t))
         self.last_t = now_s
-        self.fast += min(1.0, dt / 0.04) * (rot_raw - self.fast)
+        k = min(1.0, dt / 0.04)
+        self.fast += k * (rot_raw - self.fast)
+        self.ex += k * (g[0] - self.ex)
+        self.ey += k * (g[1] - self.ey)
+        self.ez += k * (g[2] - self.ez)
 
         self._peak_probe = max(self._peak_probe, self.fast)
         if now_s - self._probe_t > 0.1:
             _probe("rot_fast_peak", self._peak_probe)
             u = _motion.pose.up() if _motion.pose else (0, 0, 1)
             _probe("elev", u[1])
+            if _motion.elev_slow is not None:
+                _probe("elev_aim", _motion.elev_slow)
             hd = _motion.heading_delta()
             if hd is not None:
                 _probe("head_delta", hd)
@@ -764,31 +835,78 @@ class _StrikeState:
                 self.state = 1
                 self.peak = self.fast
                 self.arm_t = now_s
+                self._pdir = self._dir()
         elif self.state == 1:                     # micro-scan: catch the rise
             if self.fast > self.peak:
                 self.peak = self.fast
+                self._pdir = self._dir()
             if now_s - self.arm_t >= self.SCAN_S or self.fast < self.peak * 0.95:
                 self._fire(now_s)
                 self.state = 2
         else:                                     # cooling: settle to re-arm
+            self.low = min(self.low, self.fast)
             if self.fast < self.TH_LO:
                 self.state = 0
+            elif (self.fast > self.TH_HI
+                  and now_s - self.last_hit_t >= self.REFRACTORY_S
+                  and self.low < self.RE_DIP and self.hit_dir is not None):
+                u = self._dir()   # same-direction burst: the next hit of a run
+                if u is not None and (u[0] * self.hit_dir[0] + u[1] * self.hit_dir[1]
+                                      + u[2] * self.hit_dir[2]) > self.RE_ALIGN:
+                    self.state = 1
+                    self.peak = self.fast
+                    self.arm_t = now_s
+                    self._pdir = u
 
     def _fire(self, now_s):
         self.last_hit_t = now_s
+        self.hit_dir = self._pdir
+        self.low = 1e9
         t = _touch
         tot = (t.vsum + t.hsum) if t.in_ep else 0.0
         vert = t.vsum / tot if tot > 1e-6 else 0.5
-        u = _motion.pose.up() if _motion.pose else (0.0, 0.0, 1.0)
-        hd = _motion.heading_delta()
+        elev = _motion.elev_slow if _motion.elev_slow is not None else \
+            (_motion.pose.up()[1] if _motion.pose else 1.0)
+        az, tilt = self._stroke()
         g = _Familiar().guess()
         gid = g[0] if (g and g[1] >= 0.3) else None
         hit = [int(now_s * 1000), int(self.peak), round(vert, 2),
-               round(u[1], 2), round(hd, 0) if hd is not None else None, gid]
+               round(elev, 2),
+               round(az) if az is not None else None,
+               round(tilt) if tilt is not None else None, gid]
         self.last_ = hit
         self.hit_flag = hit
         self.n += 1
         _tap("strike", hit=hit)
+
+    def _stroke(self):
+        """The flick's rotation axis vs gravity: (azimuth_deg, tilt_deg).
+        Azimuth is measured in the horizontal plane against the device's
+        own forward (device +Z projected flat), so it is grip-relative and
+        needs no magnetometer. The axis is perpendicular to the swing
+        plane: distinct stroke DIRECTIONS land tens of degrees apart while
+        repeats of the same stroke stay within a few degrees — per hit, at
+        fire time, nothing to settle (calibrated 20260709_122741, 10x5
+        strokes: UP -100+-2 / FLAT -83+-3 / LEFT +10+-4 / DOWN +82+-3 /
+        RIGHT +170+-6, narrowest gap 8 deg)."""
+        a = self._pdir
+        if a is None or _motion.pose is None:
+            return None, None
+        u = _motion.pose.up()
+        d = a[0] * u[0] + a[1] * u[1] + a[2] * u[2]
+        tilt = math.degrees(math.asin(max(-1.0, min(1.0, d))))
+        h = [a[i] - d * u[i] for i in range(3)]
+        ref = [(1.0 if i == 2 else 0.0) - u[2] * u[i] for i in range(3)]
+        rn = math.sqrt(sum(x * x for x in ref))
+        if rn < 1e-9:
+            return None, tilt
+        ref = [x / rn for x in ref]
+        cross = [u[1] * ref[2] - u[2] * ref[1],
+                 u[2] * ref[0] - u[0] * ref[2],
+                 u[0] * ref[1] - u[1] * ref[0]]
+        az = math.degrees(math.atan2(sum(h[i] * cross[i] for i in range(3)),
+                                     sum(h[i] * ref[i] for i in range(3))))
+        return az, tilt
 
 
 _strike = _StrikeState()
@@ -798,12 +916,16 @@ class _Strike:
     """The hit, at hit-time — the drum's fastest sense."""
 
     def hit(self):
-        """[t_ms, vigor_dps, vert01, elev01, head_delta_deg|None,
-        guess_id|None] once, the moment the flick snaps. Consumed on read —
-        sound it NOW. vigor_dps: the flick's peak rotation (~200 gentle,
-        600+ hard). elev01: stick pitch, -1 pointing down .. +1 pointing up.
-        head_delta_deg: degrees left(-)/right(+) of your recent average
-        facing, None when the magnetometer isn't streaming."""
+        """[t_ms, vigor_dps, vert01, elev01, stroke_az_deg|None,
+        stroke_tilt_deg|None, guess_id|None] once, the moment the flick
+        snaps. Consumed on read — sound it NOW. vigor_dps: the flick's
+        peak rotation (~200 gentle, 600+ hard). stroke_az/tilt: WHICH WAY
+        this hit swung — the flick's rotation axis vs gravity, grip-
+        relative, per hit, nothing to settle. Repeats of one stroke stay
+        within a few degrees; distinct strokes land tens of degrees apart.
+        elev01: stick pitch posture between whips (quiet-sampled) — slow,
+        expressive, NOT a reliable drum picker at tempo (a wrist mid-flight
+        between drums has no posture yet)."""
         f = _strike.hit_flag
         _strike.hit_flag = None
         return f

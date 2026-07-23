@@ -16,6 +16,36 @@ const KIND_META = {
 const traceParam = new URLSearchParams(window.location.search).get("trace");
 const traceUrl = traceParam ? `/${traceParam}/trace.json` : "./sample-trace.json";
 
+// Run picker — creature + session dropdowns fed by the server's /api/runs.
+// Selecting a run navigates to ?trace=<creature>/logs/<session>; the server
+// bakes trace.json on demand. Absent endpoint (static hosting) → no picker.
+(async () => {
+  let runs;
+  try {
+    const r = await fetch("/api/runs", { cache: "no-store" });
+    if (!r.ok) return;
+    runs = await r.json();
+  } catch { return; }
+  if (!Array.isArray(runs) || !runs.length) return;
+  const selC = document.getElementById("sel-creature");
+  const selL = document.getElementById("sel-log");
+  const m = (traceParam || "").match(/^(.+)\/logs\/([^/]+)\/?$/);
+  const curCreature = m ? m[1] : null, curLog = m ? m[2] : null;
+  const opt = v => Object.assign(document.createElement("option"), { value: v, textContent: v });
+  selC.replaceChildren(...runs.map(r => opt(r.creature)));
+  if (curCreature && runs.some(r => r.creature === curCreature)) selC.value = curCreature;
+  const fillLogs = () => {
+    const run = runs.find(r => r.creature === selC.value);
+    selL.replaceChildren(...(run ? run.sessions : []).map(opt));
+    if (selC.value === curCreature && curLog && run.sessions.includes(curLog)) selL.value = curLog;
+  };
+  fillLogs();
+  const go = () => { location.search = `?trace=${encodeURIComponent(`${selC.value}/logs/${selL.value}`)}`; };
+  selC.addEventListener("change", () => { fillLogs(); go(); });
+  selL.addEventListener("change", go);
+  document.getElementById("run-picker").hidden = false;
+})();
+
 async function loadTrace(url) {
   // A re-bake may be in flight (a missing file → 404, or — before atomic
   // writes — a truncated one → JSON parse error). Retry briefly, and on real
@@ -47,6 +77,7 @@ try {
 
 // Grow the timeline (CSS) before we measure the SVG, when there's an IMU lane.
 if (trace.stage && trace.stage.imu) document.body.classList.add("has-imu");
+if (trace.debug) document.body.classList.add("has-debug");
 
 const t0 = trace.session_start;
 const events = trace.events.map(e => ({ ...e, t: e.t - t0, t_unix: e.t }));
@@ -112,14 +143,20 @@ const LAYOUT = {
   sizes:    { top: 240, bottom: 300 },
   accel:    { top: 318, bottom: 360 },
   gyro:     { top: 378, bottom: 420 },
+  signals:  { top: 438, bottom: 505 },   // rot_fast + detector guides
+  organs:   { top: 513, bottom: 539 },   // organ event ticks
+  midi:     { top: 547, bottom: 610 },   // piano roll
 };
 const hasImu = !!(trace.stage && trace.stage.imu);
-const TIMELINE_BOTTOM = hasImu ? LAYOUT.gyro.bottom : LAYOUT.sizes.bottom;
+const dbg = trace.debug || null;
+const TIMELINE_BOTTOM = dbg ? LAYOUT.midi.bottom
+                      : hasImu ? LAYOUT.gyro.bottom : LAYOUT.sizes.bottom;
 const margin = { left: 70, right: 30 };  // left wider for lane labels
 
 // Faint dividers between lanes
 const dividers = [LAYOUT.events.bottom + 5, LAYOUT.tokens.bottom + 5, LAYOUT.latency.bottom + 5];
 if (hasImu) dividers.push(LAYOUT.sizes.bottom + 5, LAYOUT.accel.bottom + 9);
+if (dbg) dividers.push(LAYOUT.gyro.bottom + 9, LAYOUT.signals.bottom + 5, LAYOUT.organs.bottom + 5);
 dividers.forEach(y => {
   svg.append("line").attr("class", "lane-divider")
     .attr("x1", 0).attr("x2", width).attr("y1", y).attr("y2", y);
@@ -154,6 +191,9 @@ const latencyG      = svg.append("g").attr("class", "latency-lane");
 const sizesG        = svg.append("g").attr("class", "sizes-lane");
 const accelG        = svg.append("g").attr("class", "imu-lane accel-lane");
 const gyroG         = svg.append("g").attr("class", "imu-lane gyro-lane");
+const dbgSigG       = svg.append("g");
+const dbgOrgG       = svg.append("g");
+const dbgMidiG      = svg.append("g");
 const playheadGroup = svg.append("g").attr("class", "playhead-group");
 
 const baseTimeScale = d3.scaleLinear()
@@ -388,6 +428,78 @@ function renderImu(state) {
   drawBand(gyroG, gyroSeries, gyroYScale, state);
 }
 
+// ---------- Debug lanes (signals / organs / midi — from trace.debug) ------
+let dbgSigY = null, dbgNoteY = null, dbgChColor = null, dbgSigMax = 0;
+if (dbg) {
+  const S = dbg.signals;
+  dbgSigMax = Math.max(...S.rot_fast, (dbg.guides.TH_HI || 0) * 1.2, 100);
+  dbgSigY = d3.scaleLinear([0, dbgSigMax], [LAYOUT.signals.bottom, LAYOUT.signals.top]);
+  const notes = dbg.midi || [];
+  const nLo = notes.length ? Math.min(...notes.map(n => n.note)) - 1 : 0;
+  const nHi = notes.length ? Math.max(...notes.map(n => n.note)) + 1 : 1;
+  dbgNoteY = d3.scaleLinear([nLo, nHi], [LAYOUT.midi.bottom, LAYOUT.midi.top]);
+  dbgChColor = d3.scaleOrdinal(d3.schemeTableau10);
+  addLabel(8, (LAYOUT.signals.top + LAYOUT.signals.bottom) / 2, "rot_fast");
+  addLabel(8, (LAYOUT.organs.top + LAYOUT.organs.bottom) / 2, "organs");
+  if (notes.length) addLabel(8, (LAYOUT.midi.top + LAYOUT.midi.bottom) / 2, "midi");
+}
+const DBG_ORGAN_COLOR = {
+  strike: "#4dd", touch: "#7ac", recognized: "#5d5", familiar: "#396",
+  familiar_new: "#dc4", reunify: "#c6d", state: "#557", turned: "#77a",
+  startle: "#d55", attempt: "#b5d",
+};
+function renderDebug(state) {
+  if (!dbg) return;
+  const S = dbg.signals;
+  const x = state.timeScale;
+  const [t0, t1] = x.domain();
+  let a2 = d3.bisectLeft(S.t, t0), b2 = d3.bisectRight(S.t, t1);
+  const idx = d3.range(Math.max(0, a2 - 1), Math.min(S.t.length, b2 + 1));
+
+  dbgSigG.selectAll("*").remove();
+  for (const [name, v] of Object.entries(dbg.guides || {})) {
+    if (v > dbgSigMax) continue;
+    dbgSigG.append("line").attr("class", "dbg-guide")
+      .attr("x1", margin.left).attr("x2", width - margin.right)
+      .attr("y1", dbgSigY(v)).attr("y2", dbgSigY(v));
+    dbgSigG.append("text").attr("class", "dbg-guide-label")
+      .attr("x", width - margin.right - 4).attr("y", dbgSigY(v) - 2)
+      .attr("text-anchor", "end").text(`${name} ${v}`);
+  }
+  const line = key => d3.line()
+    .x(i => x(S.t[i])).y(i => dbgSigY(Math.min(S[key][i], dbgSigMax)));
+  dbgSigG.append("path").attr("class", "dbg-rot")
+    .attr("clip-path", "url(#plot-clip)").attr("d", line("rot")(idx));
+  dbgSigG.append("path").attr("class", "dbg-rotfast")
+    .attr("clip-path", "url(#plot-clip)").attr("d", line("rot_fast")(idx));
+
+  dbgOrgG.selectAll("*").remove();
+  dbgOrgG.selectAll("rect")
+    .data((dbg.organs || []).filter(e => e.t >= t0 && e.t <= t1))
+    .join("rect")
+    .attr("class", "dbg-organ").attr("clip-path", "url(#plot-clip)")
+    .attr("x", e => x(e.t) - 1.5).attr("width", 3)
+    .attr("y", e => LAYOUT.organs.top + (e.kind === "strike" ? 0 : 8))
+    .attr("height", e => (LAYOUT.organs.bottom - LAYOUT.organs.top) - (e.kind === "strike" ? 0 : 8))
+    .attr("fill", e => DBG_ORGAN_COLOR[e.kind] || "#888")
+    .on("click", (ev, e) => setState({ playheadTime: e.t }))
+    .append("title")
+    .text(e => `${e.t.toFixed(2)}s ${e.kind} ${JSON.stringify({...e, t: undefined, kind: undefined})}`);
+
+  dbgMidiG.selectAll("*").remove();
+  if (dbg.midi && dbg.midi.length) {
+    dbgMidiG.selectAll("rect")
+      .data(dbg.midi.filter(n => n.t + n.dur >= t0 && n.t <= t1))
+      .join("rect")
+      .attr("clip-path", "url(#plot-clip)")
+      .attr("x", n => x(n.t))
+      .attr("width", n => Math.max(2, x(n.t + n.dur) - x(n.t)))
+      .attr("y", n => dbgNoteY(n.note) - 2).attr("height", 4)
+      .attr("fill", n => dbgChColor(n.ch))
+      .attr("opacity", n => 0.35 + 0.65 * (n.vel / 127));
+  }
+}
+
 // ---------- Playhead ----------
 function renderPlayhead(state) {
   playheadGroup.selectAll("*").remove();
@@ -530,6 +642,7 @@ subscribe(renderTokens);
 subscribe(renderLatency);
 subscribe(renderSizes);
 subscribe(renderImu);
+subscribe(renderDebug);
 subscribe(renderPlayhead);
 subscribe(syncChatSelection);
 
@@ -572,7 +685,14 @@ function pause() {
 }
 function tick() {
   if (playing) {
-    const t = startHead + (performance.now() - startWall) / 1000;
+    // The audio element is the timing authority while it plays: play() has
+    // real startup latency and its clock drifts from performance.now(), which
+    // reads as sounds lagging the drawn notes. Fall back to the wall clock
+    // (re-anchored every frame) when there is no audio or it has ended.
+    const audioLive = audioEl.src && !audioEl.paused && !audioEl.ended && audioEl.readyState >= 2;
+    const t = audioLive ? audioEl.currentTime
+                        : startHead + (performance.now() - startWall) / 1000;
+    startHead = t; startWall = performance.now();
     if (t >= sessionDuration) { setPlayhead(sessionDuration); pause(); }
     else setPlayhead(t);
   }
@@ -611,6 +731,16 @@ async function initStage(s) {
     try { skel = await createSkeleton(document.getElementById("stage-3d"), `/${s.mocap}`); }
     catch (e) { console.warn("skeleton:", e.message); }
   }
+  let orient = null;
+  if (!skel && dbg && dbg.orientation && dbg.orientation.length) {
+    // Recorded device attitude replaces the (unused) display mock: same 3D
+    // inset the skeleton would use, driven by the shared playhead.
+    try {
+      const { createOrient3d } = await import("/viewers/lib/orient3d.js");
+      orient = createOrient3d(document.getElementById("stage-3d"), dbg.orientation);
+      screenEl.hidden = true;
+    } catch (e) { console.warn("orient3d:", e.message); }
+  }
   const volBar = document.getElementById("stage-vol-bar");
   document.getElementById("stage-wrist").textContent = s.wrist ? s.wrist[0].toUpperCase() : "";
   if (s.audio) audioEl.src = `/${s.audio}`;
@@ -619,6 +749,7 @@ async function initStage(s) {
       const ms = sec * 1000;
       dev.render(ms);
       if (skel) skel.setTime(sec);
+      if (orient) orient.setTime(sec);
       volBar.style.width = `${Math.round(volumeAt(s.audio_events, ms) * 100)}%`;
     },
   };

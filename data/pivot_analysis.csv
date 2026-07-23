@@ -1,0 +1,136 @@
+arm,session,version,kind,added,refined_or_note,perception_stack
+bare,223521,1,seed,energy(|a|-1),seed: energy->pitch,energy
+bare,223521,2,—,,no instinct change,energy
+bare,223521,3,PIVOT,gyro-mag; 2nd voice,energy->pad swell,energy;gyro
+bare,223521,4,MUSIC,,marimba+strings+impact drums; WIN 200->100,energy;gyro
+bare,223521,5,PIVOT,orientation: 3-axis gravity->key (ax/ay dir -> E/C/D),gravity map,energy;gyro;orientation
+bare,223521,6,MUSIC,flute voice,,energy;gyro;orientation
+bare,223521,7,PIVOT,signed-axis: gy->pan (64+gy/15),panning,energy;gyro;orientation;signed
+bare,223521,8,REFINE,,reverb CCs; smoother key transitions,energy;gyro;orientation;signed
+bare,223521,9,REFINE,,key-change stability dwell,energy;gyro;orientation;signed
+bare,223521,10,REFINE,,micro-groove step engine,energy;gyro;orientation;signed
+bare,223521,11,REFINE,,flute continuous/legato,energy;gyro;orientation;signed
+bare,223521,12,REFINE,,gy->tremolo; double-stops,energy;gyro;orientation;signed
+bare,223521,13,PIVOT,gravity-filter: EMA low-pass (confound fix),diagnosed centrifugal contamination,energy;gravity-filter;gyro;orientation;signed
+bare,223521,14,MUSIC,,clock-based groove,energy;gravity-filter;gyro;orientation;signed
+bare,223521,15,MUSIC,,acoustic bass,energy;gravity-filter;gyro;orientation;signed
+bare,223521,16,FIX,,auto-release notes,energy;gravity-filter;gyro;orientation;signed
+bare,223521,17,FIX,,CC caching (thin MIDI),energy;gravity-filter;gyro;orientation;signed
+bare,225722,1,seed,energy,seed,energy
+bare,225722,2,—,,no change,energy
+bare,225722,3,PIVOT,gyro-mag; |ay| tilt-mag,2nd voice pad,energy;gyro
+bare,225722,4,REFINE,windowed avg energy,octave pad; impact drums,energy;gyro;windowed
+bare,225722,5,PIVOT,orientation: ay->major/minor; signed pan ay & gx,mode + pan,energy;gyro;orientation;signed;windowed
+bare,225722,6,PIVOT,signed dir: step=1 if gx>0,melodic direction from gx sign,energy;gyro;orientation;signed;windowed
+bare,225722,7,MUSIC,,ostinato voice,energy;gyro;orientation;signed;windowed
+bare,225722,8,MUSIC,,shaker,energy;gyro;orientation;signed;windowed
+bare,225722,9,PIVOT,az tilt; pan gx->ax,z-axis tilt; gyro_offset,az;energy;gyro;orientation;signed;windowed
+bare,225722,10,MUSIC,,brightness; flourish,az;energy;gyro;orientation;signed;windowed
+bare,225722,11,FIX,,removed speaker beep (broke illusion),az;energy;gyro;orientation;signed;windowed
+bare,225722,12,MUSIC,,conga swap,az;energy;gyro;orientation;signed;windowed
+bare,225722,13,PIVOT,"atan2(ax,az) circular wrist angle",circular scale index,atan2;az;energy;gyro;orientation;signed;windowed
+bare,225722,14,MUSIC,,strum queue,atan2;az;energy;gyro;orientation;signed;windowed
+bare,225722,15,REFINE,,stillness decay; smooth index,atan2;az;energy;gyro;orientation;signed;windowed
+bare,225722,16,REFINE,,(hold),atan2;az;energy;gyro;orientation;signed;windowed
+bare,225722,17,MUSIC,,snare rim on jerk,atan2;az;energy;gyro;orientation;signed;windowed
+bare,230309,1,seed,energy,seed,energy
+bare,230309,2,—,,no change,energy
+bare,230309,3,PIVOT,gyro-mag; smoothed energy (mean recent10),"energy->pad, gyro->melody",energy;gyro
+bare,230309,4,REFINE,sqrt(smooth_e) map,impact drums,energy;gyro
+bare,230309,5,PIVOT,signed dir: if gx>0,melodic direction,energy;gyro;signed
+bare,230309,6,PIVOT,signed-axis: ay->pan (tilt_pan); counter-pan,stereo tilt,energy;gyro;signed
+bare,230309,7,MUSIC,,hi-hat pulse from gyro,energy;gyro;signed
+bare,230309,8,REFINE,,adaptive intervals from gyro,energy;gyro;signed
+bare,230309,9,REFINE,,interval tuning,energy;gyro;signed
+bare,230309,10,MUSIC,,,energy;gyro;signed
+bare,230309,11,PIVOT,orientation: az vertical register (az>0.5/<-0.5 octave),vertical pitch,az;energy;gyro;orientation;signed
+bare,230309,12,PIVOT,motion accumulation (integrate e+g over time),harmonic transitions over time,accumulation;az;energy;gyro;orientation;signed
+bare,230309,13,REFINE,,thresholds,accumulation;az;energy;gyro;orientation;signed
+bare,230309,14,REFINE,,pulse tuning,accumulation;az;energy;gyro;orientation;signed
+bare,230309,15,REFINE(confound),,noticed centrifugal pan-stick; widened ay range,accumulation;az;energy;gyro;orientation;signed
+bare,230309,16,MUSIC,,brightness; vibrato,accumulation;az;energy;gyro;orientation;signed
+bare,230309,17,PIVOT,signed combine: ay*40 + gy/25 (swirl),confound swirl blend,accumulation;az;energy;gyro;orientation;signed
+bare,230309,18,REFINE,,gyro threshold,accumulation;az;energy;gyro;orientation;signed
+menu,224536,1,seed,energy,seed,energy
+menu,224536,2,—,,,energy
+menu,224536,3,PIVOT,gyro-mag; signed ay tilt-offset,2nd voice,energy;gyro;signed
+menu,224536,4,REFINE,tilt_norm (ay normalized),,energy;gyro;signed
+menu,224536,5,REFINE,,drum thresholds from gyro,energy;gyro;signed
+menu,224536,6,PIVOT,signed-axis: ax->pan ((ax+1.2)*53),stereo,energy;gyro;signed
+menu,224536,7,PIVOT,twist=sqrt(gy^2+gz^2); |ay|->reverb,guitar from twist,energy;gyro;signed;twist
+menu,224536,8,FIX,,typo fix,energy;gyro;signed;twist
+menu,224536,9,REFINE,,tilt_norm,energy;gyro;signed;twist
+menu,224536,10,PIVOT,peak-track: recent_peak_energy decay; suspension,stillness-after-peak,energy;gyro;peak;signed;twist
+menu,224536,11,MUSIC,,drums,energy;gyro;peak;signed;twist
+menu,224536,12,REFINE,,peak decay tune,energy;gyro;peak;signed;twist
+menu,224536,13,REFINE,,thresholds,energy;gyro;peak;signed;twist
+menu,224536,14,REFINE,,thresholds,energy;gyro;peak;signed;twist
+menu,224536,15,REFINE,,,energy;gyro;peak;signed;twist
+menu,224536,16,PIVOT,APEX/reversal: prev_twist>120 & twist<prev; gyro apex,fire at gesture turn,apex;energy;gyro;peak;signed;twist
+menu,224536,17,REFINE,,stillness ticks,apex;energy;gyro;peak;signed;twist
+menu,224536,18,PIVOT,signed ay: octave_shift ay<-0.6; energy tension,posture,apex;energy;gyro;peak;signed;twist
+menu,224536,19,REFINE,ay>0.5 bass posture,hanging-note fix,apex;energy;gyro;peak;signed;twist
+menu,230735,1,seed,energy,seed,energy
+menu,230735,2,—,,,energy
+menu,230735,3,PIVOT,gyro; onset (energy<prev = decel strike); signed ax tilt,strike on deceleration,energy;gyro;onset;signed
+menu,230735,4,PIVOT,orientation: ay-tilt->chord (<-0.3/>0.3); ax->pan,tilt chords,energy;gyro;onset;orientation;signed
+menu,230735,5,REFINE,,pan/dur tuning,energy;gyro;onset;orientation;signed
+menu,230735,6,PIVOT,adaptive baseline: mean_energy EMA; strike_thresh=mean*0.8,self-calibrating threshold,adaptive;energy;gyro;onset;orientation;signed
+menu,230735,7,REFINE,,threshold tuning,adaptive;energy;gyro;onset;orientation;signed
+menu,230735,8,REFINE,,adaptive drum from mean_energy,adaptive;energy;gyro;onset;orientation;signed
+menu,230735,9,PIVOT,"smoothed_tilt (ay EMA, partial confound); az orient; |gx| drum",single-axis gravity smoothing,adaptive;az;energy;gyro;onset;orientation;signed
+menu,231148,1,seed,energy,seed,energy
+menu,231148,2,—,,,energy
+menu,231148,3,PIVOT,gyro-mag,2nd voice strings,energy;gyro
+menu,231148,4,PIVOT,adaptive baseline: smooth_energy EMA; onset(energy<last); accent_thresh,adaptive accent,adaptive;energy;gyro;onset
+menu,231148,5,MUSIC,,,adaptive;energy;gyro;onset
+menu,231148,6,MUSIC,,vel tuning,adaptive;energy;gyro;onset
+menu,231148,7,PIVOT,energy-ZONES (smooth_e>1.1/0.5 chord zones); signed gx->pan,energy-band harmony,adaptive;energy;gyro;onset;signed;zone
+menu,231148,8,REFINE,asymmetric energy smoothing (fast-up/slow-down),peak-holding baseline,adaptive;energy;gyro;onset;signed;zone
+menu,231148,9,REFINE,,zone/pan tuning,adaptive;energy;gyro;onset;signed;zone
+menu,231148,10,MUSIC,,bass on energy,adaptive;energy;gyro;onset;signed;zone
+menu,231148,11,MUSIC,,,adaptive;energy;gyro;onset;signed;zone
+menu,231148,12,REFINE,|gx|->breath,breath layer,adaptive;energy;gyro;onset;signed;zone
+menu,231148,13,PIVOT,4th energy zone (D-maj extreme peak),more energy bands,adaptive;energy;gyro;onset;peak;signed;zone
+menu,231148,14,MUSIC,,mod wheel from energy,adaptive;energy;gyro;onset;peak;signed;zone
+menu,231148,15,MUSIC,,,adaptive;energy;gyro;onset;peak;signed;zone
+menu,231148,16,PIVOT,"signed ay tilt_offset (late, single axis)",tilt melody,adaptive;energy;gyro;onset;peak;signed;zone
+menu,231148,17,REFINE,,accent clamp,adaptive;energy;gyro;onset;peak;signed;zone
+menu,231148,18,MUSIC,,filter from energy,adaptive;energy;gyro;onset;peak;signed;zone
+menu,231148,19,REFINE,|gx|->breath refine,expression,adaptive;energy;gyro;onset;peak;signed;zone
+menu,233217,1,seed,energy,seed,energy
+menu,233217,2,—,,,energy
+menu,233217,3,PIVOT,gyro (normalized); tempo-clock from energy,rhythmic clock,energy;gyro;tempo
+menu,233217,4,PIVOT,signed twist gy->pan,melody pan,energy;gyro;signed;tempo;twist
+menu,233217,5,REFINE,,tempo/step tuning,energy;gyro;signed;tempo;twist
+menu,233217,6,PIVOT,signed ax->pan; twist_speed=|gy|,mirror stereo,energy;gyro;signed;tempo;twist
+menu,233217,7,PIVOT,smooth_ax (single-axis filter),swing,energy;gyro;signed;tempo;twist
+menu,233217,8,PIVOT,d_gyro (gyro derivative/jerk),gesture-change trigger,energy;gyro;jerk;signed;tempo;twist
+menu,233217,9,REFINE,,should_play density from d_gyro,energy;gyro;jerk;signed;tempo;twist
+menu,233217,10,PIVOT,smooth_ax orientation (<-0.25/>0.25),directional,energy;gyro;jerk;orientation;signed;tempo;twist
+menu,233217,11,PIVOT,smooth_ay + tilt_offset,tilt melody,energy;gyro;jerk;orientation;signed;tempo;twist
+menu,233217,12,PIVOT,smooth_tempo tracker,tempo smoothing,energy;gyro;jerk;orientation;signed;tempo;twist
+menu,233217,13,REFINE,dual-axis smoothing tune,,energy;gyro;jerk;orientation;signed;tempo;twist
+menu,233217,14,REFINE,,tempo tune,energy;gyro;jerk;orientation;signed;tempo;twist
+menu,233217,15,MUSIC,,bass voice,energy;gyro;jerk;orientation;signed;tempo;twist
+menu,233217,16,REFINE,,step pattern,energy;gyro;jerk;orientation;signed;tempo;twist
+menu,233217,17,REFINE,,tempo,energy;gyro;jerk;orientation;signed;tempo;twist
+menu,233217,18,REFINE,,slower smoothing,energy;gyro;jerk;orientation;signed;tempo;twist
+menu,233217,19,MUSIC,,cutoff from gyro,energy;gyro;jerk;orientation;signed;tempo;twist
+menu,233735,1,seed,energy,seed,energy
+menu,233735,2,—,,,energy
+menu,233735,3,PIVOT,twist=|gx| (magnitude),pad idx from twist,energy;twist
+menu,233735,4,REFINE,,pad idx,energy;twist
+menu,233735,5,PIVOT,smooth_twist; avg_energy adaptive; beat_interval tempo,adaptive beat,adaptive;energy;tempo;twist
+menu,233735,6,PIVOT,signed swing gy; trigger_threshold from avg_e,swing + adaptive trigger,adaptive;energy;signed;tempo;twist
+menu,233735,7,PIVOT,signed swing->pan; reverb from avg_e,stereo,adaptive;energy;signed;tempo;twist
+menu,233735,8,REFINE,,tempo/threshold tune,adaptive;energy;signed;tempo;twist
+menu,233735,9,REFINE,,hat density from avg_e,adaptive;energy;signed;tempo;twist
+menu,233735,10,MUSIC,,(further refine),adaptive;energy;signed;tempo;twist
+menu,234820,1,seed,energy,seed,energy
+menu,234820,2,—,,,energy
+menu,234820,3,PIVOT,gyro-mag,raw ax to Mem,energy;gyro
+menu,234820,4,PIVOT,smooth_energy EMA; jerk=e-last_e,adaptive,energy;gyro;jerk
+menu,234820,5,PIVOT,windowed signed gy->pan (avg_gy),windowed pan,energy;gyro;jerk;signed;windowed
+menu,234820,6,PIVOT,windowed orientation: avg_az/avg_ax elevation,elevation,az;energy;gyro;jerk;orientation;signed;windowed
+menu,234820,7,PIVOT,jerk+gyro onset trigger,strike on jerk,az;energy;gyro;jerk;onset;orientation;signed;windowed

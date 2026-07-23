@@ -1,22 +1,36 @@
 async def run():
-    # THE FEEL GATE, v2. A strike is a wrist FLICK (gyro peak); WHERE you
-    # aim picks the drum: stick pitch chooses the row (high / mid / low),
-    # magnetometer heading chooses the column (left / middle / right of
-    # your average facing). Nine drums in the air around you. Without a
-    # mag stream it falls back to the three-row kit.
+    # THE FEEL GATE, v4. A strike is a wrist FLICK (gyro peak); WHICH WAY
+    # the flick swings picks the drum — five strokes, five drums, decided
+    # per hit from the flick's own rotation axis. Nothing to settle, no
+    # posture memory: a stroke IS its drum.
+    # (v3 picked drums from held stick pitch — worked for deliberate play,
+    # but a wrist mid-flight between drums has no posture, so every switch
+    # at tempo misfired. v2's magnetometer column measured the arm's swing
+    # arc, not the aim. Both retired on session evidence, 2026-07-09.)
     #
-    #            left        middle      right
-    #   high:    crash 49    ride 51     china 52
-    #   mid:     hi tom 48   snare 38    mid tom 45
-    #   low:     floor 41    kick 36     low tom 43
+    # Stroke azimuth calibrated on the 10x5 labeled session 20260709_122741
+    # (clusters +-3..6 deg, narrowest gap 8 deg — UP|FLAT):
+    #   fwd-UP   -100  -> closed hat 42     fwd-FLAT  -83  -> snare 38
+    #   LEFT      +10  -> high tom 48       fwd-DOWN  +82  -> kick 36
+    #   RIGHT    +170  -> crash 49
     DRUMS = 9                       # GM drum channel: the note picks the sound
     Synth.control_change(DRUMS, 91, 45)   # a touch of room
-    KIT = ((49, 51, 52),            # high row
-           (48, 38, 45),            # mid row
-           (41, 36, 43))            # low row
+
+    def drum_for(az):
+        if az is None:
+            return 38               # axis unreadable: default snare
+        if -93 <= az < -39:
+            return 38               # fwd-FLAT -> snare
+        if -39 <= az < 45:
+            return 48               # LEFT     -> high tom
+        if 45 <= az < 123:
+            return 36               # fwd-DOWN -> kick
+        if az >= 123 or az < -142:
+            return 49               # RIGHT    -> crash
+        return 42                   # fwd-UP   -> closed hat
 
     win_start = time.ticks_ms() / 1000.0
-    hits = []                       # [vigor_z, vert01] this window
+    hits = []                       # [vigor, stroke_az] this window
     last_t = win_start
 
     while True:
@@ -26,29 +40,22 @@ async def run():
 
         h = Strike.hit()
         if h:
-            t_ms, vigor, vert, elev, head, gid = h
+            t_ms, vigor, vert, elev, az, tilt, gid = h
             # vigor = flick peak dps: gentle ~450-600, hard ~800-1500
             vel = max(35, min(120, int(35 + (vigor - 400) * 0.1)))
-            row = 0 if elev > 0.35 else (2 if elev < -0.35 else 1)
-            if head is None:
-                col = 1                      # no mag: three-row kit
-            else:
-                col = 0 if head < -25 else (2 if head > 25 else 1)
-            note = KIT[row][col]
-            Synth.note(DRUMS, note, 150, vel)
-            hits.append([vigor, elev if head is None else head])
+            Synth.note(DRUMS, drum_for(az), 150, vel)
+            hits.append([vigor, az])
 
         # REPORT every ~20 s: their playing and my sounding, side by side
         if now - win_start > 20.0:
             span = now - win_start
             if hits:
                 vig = sorted(h[0] for h in hits)
-                verts = [h[1] for h in hits]
+                azs = [h[1] for h in hits]
                 stats = ("{} hits ({:.1f}/s) | vigor med {:.1f} max {:.1f} | "
-                         "aim {}".format(
+                         "strokes {}".format(
                              len(hits), len(hits) / span, vig[len(vig) // 2],
-                             vig[-1],
-                             [round(v, 1) for v in verts[-8:]]))
+                             vig[-1], azs[-8:]))
             else:
                 stats = "no hits"
             send("window {:.0f}s: {} | swings known [id,n] {} | state {} "

@@ -22,7 +22,7 @@ from .llm import load_llm
 from .reflection import Creature, ReflectionLoop
 
 PORT = 8765
-HEARTBEAT_TIMEOUT = 12
+HEARTBEAT_TIMEOUT = 12   # default; a BOOT announcing keepalive=N stretches it
 
 
 def fmt_tokens(n):
@@ -65,7 +65,8 @@ class SpineApp(App):
 
     BINDINGS = [("ctrl+c", "quit", "Quit"), ("escape", "quit", "Quit"), ("ctrl+q", "quit", "Quit")]
 
-    def __init__(self, creature, resume=False, llm=None, llm_info=None, creature_ip=None):
+    def __init__(self, creature, resume=False, llm=None, llm_info=None, creature_ip=None,
+                 max_reflections=None):
         super().__init__()
         self.creature = creature
         self.board_ws = None
@@ -73,6 +74,13 @@ class SpineApp(App):
         self._ws_server = None
         self.locked_ip = creature_ip
         self._rejected_seen = set()
+        # Batch-mode devices announce themselves in BOOT (mode=batch,
+        # keepalive=N, iv=<instinct version they run>): the spine adapts its
+        # heartbeat timeout, skips redundant instinct pushes, and answers
+        # FLUSH-END with NAP once any pending reflection has completed.
+        self.device_batch = False
+        self.device_napping = False
+        self.hb_timeout = HEARTBEAT_TIMEOUT
 
         self.loop = ReflectionLoop(
             creature, llm,
@@ -83,6 +91,7 @@ class SpineApp(App):
             on_intent=self._loop_intent,
             on_instinct_deploy=self._loop_deploy,
             on_status_change=self.update_status,
+            max_reflections=max_reflections,
         )
 
     # ── Textual lifecycle ─────────────────────────────────────────────
@@ -147,6 +156,10 @@ class SpineApp(App):
     async def _loop_deploy(self, code: str, version: int) -> None:
         if self.board_ws is not None:
             try:
+                if self.device_batch:
+                    # batch runtimes track the version for the next BOOT's
+                    # iv= announcement (skips redundant re-pushes on wake)
+                    await self.board_ws.send("IV:{}".format(version))
                 await self.board_ws.send(code)
                 self.log_msg("deployed new instinct v{}".format(version), style="cyan")
             except Exception as e:
@@ -212,11 +225,13 @@ class SpineApp(App):
             usage_info = "  · {} in / {} out · ${:.2f}".format(
                 fmt_tokens(in_total), fmt_tokens(out_total), cost)
         prefix = "{}{}{}".format(self.creature.name, resume_info, usage_info)
-        if self.board_ws is not None and (time.time() - self.last_heartbeat) < HEARTBEAT_TIMEOUT:
+        if self.board_ws is not None and (time.time() - self.last_heartbeat) < self.hb_timeout:
             extra = "  [dim]reflecting...[/dim]" if self.loop.reflecting else ""
             status.update("[bold green]● connected[/]  {}{}".format(prefix, extra))
         elif self.board_ws is not None:
             status.update("[bold yellow]● heartbeat lost[/]  {}".format(prefix))
+        elif self.device_napping:
+            status.update("[bold cyan]● napping (batch)[/]  {}".format(prefix))
         else:
             status.update("[bold red]● disconnected[/]  {}".format(prefix))
 
@@ -236,6 +251,7 @@ class SpineApp(App):
 
         self.log_msg("board connected from {}:{}".format(addr[0], addr[1]), style="green")
         self.board_ws = ws
+        self.device_napping = False
 
         # Send session id first so the device can detect a fresh-spine restart
         # vs a same-session reconnect / reflection update. On --resume we send
@@ -243,13 +259,65 @@ class SpineApp(App):
         session_id = self.loop.resumed_from or self.loop.session_id
         await ws.send("SESSION:" + session_id)
 
-        await ws.send(self.loop.current_instinct)
-        self.log_msg("sent instinct v{}".format(self.loop.instinct_version), style="dim")
+        # Wait briefly for the device to introduce itself (new runtimes send
+        # BOOT immediately). A batch device announcing the current instinct
+        # version gets no redundant push; anything else gets the instinct as
+        # before. Legacy boards that say nothing hit the 2 s timeout.
+        first = None
+        try:
+            first = await asyncio.wait_for(ws.recv(), timeout=2.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
+        device_iv = None
+        if isinstance(first, str) and first.startswith("BOOT:"):
+            self.device_batch = "mode=batch" in first
+            for tok in first.split():
+                if tok.startswith("keepalive="):
+                    try:
+                        self.hb_timeout = max(HEARTBEAT_TIMEOUT, 2.5 * int(tok[10:]))
+                    except ValueError:
+                        pass
+                elif tok.startswith("iv="):
+                    try:
+                        device_iv = int(tok[3:])
+                    except ValueError:
+                        pass
+        if self.device_batch:
+            # the animal gets the hour: laptop clock + tz, one message.
+            # Gated on the batch announce — legacy runtimes would exec it.
+            lt = time.localtime()
+            gmtoff = getattr(lt, "tm_gmtoff", 0) or 0
+            await ws.send("TIME:{}:{}".format(int(time.time()), gmtoff))
+        if self.device_batch and device_iv == self.loop.instinct_version:
+            self.log_msg("device runs instinct v{} — no push".format(device_iv), style="dim")
+        else:
+            if self.device_batch:
+                await ws.send("IV:{}".format(self.loop.instinct_version))
+            await ws.send(self.loop.current_instinct)
+            self.log_msg("sent instinct v{}".format(self.loop.instinct_version), style="dim")
 
         try:
-            async for msg in ws:
+            pending = [first] if first is not None else []
+            while True:
+                msg = pending.pop(0) if pending else await ws.recv()
                 if msg == "HEARTBEAT":
                     self.last_heartbeat = time.time()
+                elif msg == "FLUSH-END":
+                    self.run_worker(self._flush_ack(ws), exclusive=False)
+                elif msg.startswith("J:"):
+                    # buffered journal line: J:<device_t_ms>:<text>
+                    try:
+                        t_ms, text = msg[2:].split(":", 1)
+                        stamp = "[t+{:.0f}s]".format(int(t_ms) / 1000)
+                    except ValueError:
+                        stamp, text = "", msg[2:]
+                    if text.startswith("CRASH:"):
+                        self.log_msg("{} {}".format(stamp, text), style="bold red")
+                        self.loop.add_crash(text)
+                    else:
+                        self.log_msg("{} {}".format(stamp, text), style="dim")
+                        self.loop.add_message(text)
+                    # no per-line reflect: FLUSH-END decides, once
                 elif msg.startswith("CRASH:"):
                     self.log_msg(msg, style="bold red")
                     self.loop.add_crash(msg)
@@ -259,14 +327,40 @@ class SpineApp(App):
                 else:
                     self.log_msg(msg)
                     self.loop.add_message(msg)
-                    self._schedule_reflect()
+                    if not self.device_batch:
+                        self._schedule_reflect()
         except asyncio.CancelledError:
             pass
         except Exception:
             pass
         finally:
-            self.board_ws = None
-            self.log_msg("board disconnected", style="red")
+            # Only the handler that still owns board_ws may clear it: a
+            # fast-reconnecting board registers its new connection before
+            # the old handler unwinds (same race as the tuner harness).
+            if self.board_ws is ws:
+                self.board_ws = None
+                if self.device_batch:
+                    self.device_napping = True
+                    self.log_msg("board napping (batch) — next wake by its own clock", style="cyan")
+                else:
+                    self.log_msg("board disconnected", style="red")
+            else:
+                self.log_msg("stale connection closed (board reconnected)", style="dim")
+
+    async def _flush_ack(self, ws):
+        """The batch handshake: journal synced -> reflect if warranted ->
+        NAP. The device holds its radio up until the NAP (or a fresh
+        instinct) arrives, then sleeps."""
+        reflected = False
+        if self.loop.needs_reflection():
+            await self._reflect_with_refire()
+            reflected = True
+        try:
+            await ws.send("NAP")
+            self.log_msg("→ NAP{}".format(" (after reflection)" if reflected else ""),
+                         style="cyan")
+        except Exception:
+            pass
 
     async def ws_server(self):
         try:
@@ -292,6 +386,10 @@ def main():
     parser.add_argument("--creature-ip", default=None, metavar="IP",
                         help="Only accept connections from this board IP. "
                              "If omitted, locks to whichever board connects first.")
+    parser.add_argument("--max-reflections", type=int, default=None, metavar="N",
+                        help="Hard cap on LLM reflections this session. 0 = no LLM "
+                             "at all: deploy the seed and just journal (the feel-gate "
+                             "mode, mirroring sim-spine).")
     args = parser.parse_args()
     creature = Creature(args.creature_path)
     llm, llm_info = load_llm(args.llm)
@@ -299,7 +397,8 @@ def main():
     # handle drag-selection — lets you copy text out of the log panel.
     SpineApp(creature=creature, resume=args.resume,
              llm=llm, llm_info=llm_info,
-             creature_ip=args.creature_ip).run(mouse=False)
+             creature_ip=args.creature_ip,
+             max_reflections=args.max_reflections).run(mouse=False)
 
 
 if __name__ == "__main__":

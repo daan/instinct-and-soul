@@ -39,6 +39,80 @@ def _describe(d):
     return f"{d.device}  {d.manufacturer or '?'}  {d.product or '?'}"
 
 
+# ── talking to MicroPython ─────────────────────────────────────────────────
+
+def _raw_repl_help(port):
+    return (
+        "flash: could not reach a MicroPython REPL on {port}.\n"
+        "\n"
+        "The board answered on USB but never entered the MicroPython prompt.\n"
+        "`flash` only copies .py files onto a board that is ALREADY running\n"
+        "MicroPython — it does not install firmware. Most likely one of:\n"
+        "\n"
+        "  * the board runs other firmware (Arduino, factory demo, ...):\n"
+        "      install the UIFlow MicroPython firmware first — M5Burner for\n"
+        "      M5Stack boards, esptool for generic ESP32. See docs/INSTALL.md.\n"
+        "  * the board is in bootloader/download mode (green LED blinking):\n"
+        "      that mode is for esptool/M5Burner firmware burning, not for\n"
+        "      file copy — reset back to normal mode before running flash.\n"
+        "  * a running main.py is hogging the REPL (busy loop, blocking wifi\n"
+        "      call): hard-reset (hold power ~6 s), or hold BtnA at boot to\n"
+        "      drop to REPL, then rerun flash immediately."
+    ).format(port=port)
+
+
+_RESUME = False   # sticky: once resume mode worked, keep using it this run
+
+
+def _repl_busy(out):
+    return ("could not enter raw repl" in out) or ("could not exec command" in out)
+
+
+def _mpremote(port, *args, timeout=20):
+    """Run one mpremote command with output captured. Returns CompletedProcess;
+    exits with the friendly raw-REPL diagnosis if the board isn't MicroPython.
+
+    If the normal (soft-reset) path finds the REPL hogged — fresh UIFlow
+    firmware's startup wins that race every boot — retry in `mpremote resume`
+    mode, which skips the soft reset and interrupts the running program
+    instead. Resume mode is sticky for the rest of the run, with one retry
+    per command (its raw-paste handshake occasionally glitches)."""
+    global _RESUME
+    attempts = [True, True] if _RESUME else [False, True, True]
+    for i, resume in enumerate(attempts):
+        cmd = (["mpremote"] + (["resume"] if resume else [])
+               + ["connect", port] + list(args))
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise SystemExit(
+                "flash: mpremote timed out after {}s ({}).\n".format(timeout, " ".join(args))
+                + _raw_repl_help(port))
+        if result.returncode == 0 or not _repl_busy(result.stderr + result.stdout):
+            if resume:
+                _RESUME = True
+            return result
+        if not resume:
+            print("flash: REPL busy on the soft-reset path — retrying in resume mode")
+    raise SystemExit(_raw_repl_help(port))
+
+
+def _fail(msg, result):
+    """Exit with the command's last meaningful error line, not a traceback dump."""
+    lines = [l for l in (result.stderr + result.stdout).splitlines() if l.strip()]
+    tail = lines[-1] if lines else "(no output)"
+    raise SystemExit("flash: {} failed: {}".format(msg, tail))
+
+
+def _probe_micropython(port):
+    """Fail fast and friendly unless the board answers as MicroPython."""
+    result = _mpremote(port, "exec", "import sys; print(sys.implementation.name)")
+    if result.returncode != 0:
+        _fail("probing the board", result)
+    name = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else "?"
+    print("flash: board runs {} — ok".format(name))
+
+
 def detect_port():
     devices = usb_devices()
     if not devices:
@@ -155,9 +229,7 @@ def render_wifi_py(cfg, source):
 
 def _device_has_wifi_py(port):
     """Return True if wifi.py exists on the device. ~200-400ms over USB."""
-    result = subprocess.run(
-        ["mpremote", "connect", port, "ls"],
-        capture_output=True, text=True)
+    result = _mpremote(port, "ls")
     if result.returncode != 0:
         raise SystemExit("flash: could not ls device: " + result.stderr.strip())
     for line in result.stdout.splitlines():
@@ -206,10 +278,7 @@ def _ensure_remote_dirs(port, files):
     """
     dirs = sorted({os.path.dirname(remote) for _, remote in files})
     for d in dirs:
-        result = subprocess.run(
-            ["mpremote", "connect", port, "mkdir", ":" + d],
-            capture_output=True, text=True,
-        )
+        result = _mpremote(port, "mkdir", ":" + d)
         if result.returncode != 0:
             combined = (result.stderr + result.stdout).lower()
             if "exists" not in combined:
@@ -225,6 +294,7 @@ def flash_creature(args):
         raise SystemExit("flash: no main.py in {}".format(args.creature_path))
 
     port = args.port or detect_port()
+    _probe_micropython(port)
 
     wifi_tmp = None
     wifi_action = None    # "write", "keep", "skipped"
@@ -267,22 +337,22 @@ def flash_creature(args):
     try:
         cmds = []
         if wifi_action == "write":
-            cmds.append((["mpremote", "connect", port, "cp", wifi_tmp, ":wifi.py"], "copied wifi.py"))
-        cmds.append((["mpremote", "connect", port, "cp", main_py, ":main.py"], "copied main.py"))
+            cmds.append((["cp", wifi_tmp, ":wifi.py"], "copied wifi.py"))
+        cmds.append((["cp", main_py, ":main.py"], "copied main.py"))
 
         if lib_files:
             _ensure_remote_dirs(port, lib_files)
             for local, remote in lib_files:
                 cmds.append(
-                    (["mpremote", "connect", port, "cp", local, ":" + remote],
+                    (["cp", local, ":" + remote],
                      "copied {} -> {}".format(os.path.relpath(local), remote))
                 )
 
-        cmds.append((["mpremote", "connect", port, "reset"], "reset"))
+        cmds.append((["reset"], "reset"))
         for cmd, msg in cmds:
-            result = subprocess.run(cmd)
+            result = _mpremote(port, *cmd)
             if result.returncode != 0:
-                sys.exit(result.returncode)
+                _fail(msg.replace("copied", "copying").replace("reset", "resetting"), result)
             print("flash: " + msg)
     finally:
         if wifi_tmp:
@@ -302,15 +372,16 @@ def flash_wifi(args):
 
     try:
         port = args.port or detect_port()
+        _probe_micropython(port)
         print("flash wifi: from {} -> {}".format(src, port))
         cmds = [
-            (["mpremote", "connect", port, "cp", tmp_path, ":wifi.py"], "copied wifi.py"),
-            (["mpremote", "connect", port, "reset"], "reset"),
+            (["cp", tmp_path, ":wifi.py"], "copied wifi.py"),
+            (["reset"], "reset"),
         ]
         for cmd, msg in cmds:
-            result = subprocess.run(cmd)
+            result = _mpremote(port, *cmd)
             if result.returncode != 0:
-                sys.exit(result.returncode)
+                _fail(msg.replace("copied", "copying").replace("reset", "resetting"), result)
             print("flash wifi: " + msg)
     finally:
         os.unlink(tmp_path)

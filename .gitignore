@@ -8,6 +8,12 @@ __pycache__/
 creatures/**/logs/
 sim_creatures/**/logs/
 
+test/organ/output/*
+test/organ/study/*
+tune*.log
+boot-watch-*log
+
+
 # Simulator run output (captured sessions: imu/audio/midi/display + baked trace.json).
 sim_out/
 

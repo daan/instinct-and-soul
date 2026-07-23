@@ -4,6 +4,7 @@ A run is a spine/sim-spine session dir, a creature dir (latest session), or a
 no-LLM creature-sim run dir (sim_out/<name>/). All bake to one trace.json.
 """
 import argparse
+import glob
 import http.server
 import json
 import os
@@ -13,6 +14,23 @@ import webbrowser
 from urllib.parse import quote
 
 from .trace import build_view, write_trace
+
+
+def list_runs(root: str) -> list[dict]:
+    """Creature dirs with a logs/ of sessions, for the viewer's run picker.
+    Covers creatures/<name> and sim_creatures/<series>/<experiment>."""
+    runs = []
+    logs_dirs = sorted(
+        glob.glob(os.path.join(root, "creatures", "*", "logs"))
+        + glob.glob(os.path.join(root, "sim_creatures", "*", "logs"))
+        + glob.glob(os.path.join(root, "sim_creatures", "*", "*", "logs")))
+    for logs in logs_dirs:
+        sessions = sorted((d for d in os.listdir(logs)
+                           if os.path.isdir(os.path.join(logs, d))), reverse=True)
+        if sessions:
+            runs.append({"creature": os.path.relpath(os.path.dirname(logs), root),
+                         "sessions": sessions})
+    return runs
 
 
 class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
@@ -25,6 +43,30 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
 
     def log_message(self, *a):
         pass
+
+    def do_GET(self):
+        if self.path.split("?")[0] == "/api/runs":
+            body = json.dumps(list_runs(os.getcwd())).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        # Bake on demand: the run picker can land on a session that was never
+        # traced. Serving its trace.json bakes it first, then serves the file.
+        fpath = self.translate_path(self.path)
+        if fpath.endswith("trace.json") and not os.path.exists(fpath):
+            run_dir = os.path.dirname(os.path.abspath(fpath))
+            root = os.getcwd()
+            if run_dir.startswith(root + os.sep) and os.path.isdir(run_dir):
+                try:
+                    print(f"baking {os.path.relpath(run_dir)}…", file=sys.stderr)
+                    write_trace(build_view(run_dir, root), fpath)
+                except Exception as e:
+                    self.send_error(500, f"bake failed: {e}")
+                    return
+        super().do_GET()
 
 
 def find_repo_root(start: str) -> str:

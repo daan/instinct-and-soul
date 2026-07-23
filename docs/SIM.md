@@ -116,6 +116,19 @@ one format across the harness, grep/diff) is exactly what this project needs.
 
 ## Decision 3 — one session schema, identical for real and sim
 
+**Artifact filenames (store_format 2, 2026-07):** versioned artifacts
+(instinct/, experience/, reflections/, crashes/, memory/) are named
+`{t_ms:08d}_v{n:03d}.{ext}` — creature-clock milliseconds first
+(lexicographic = chronological), then a **per-type** version counter
+(instinct v001 = the seed, v002 = the soul's first rewrite). The global
+event counter survives as the `seq` field inside reflection records;
+reflection records also carry their own per-type `n`. `session.json`
+declares `"store_format": 2`; readers (`trace`, `bake-video`, resume) parse
+both formats — legacy sessions (`{seq:03d}_{t_s}` names, no store_format
+field) stay readable forever. Live sessions additionally record
+`input/imu_stream.jsonl` (the full OSC stream — a replayable clip) and
+`input/mag_stream.jsonl` when the device streams `/mag`.
+
 A run — simulated or real — produces a **session directory**:
 
 ```
