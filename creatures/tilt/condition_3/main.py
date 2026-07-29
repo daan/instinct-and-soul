@@ -305,6 +305,8 @@ JOURNAL = []            # (t_ms, line)
 JOURNAL_MAX = 400
 _wake_now = None        # asyncio.Event, created in main
 instinct_version = 0    # spine's version of the instinct we run (0 = seed)
+_connects = 0           # websocket connects this boot: 0 = the first
+_link_down_ms = None    # when the link dropped, to report how long it was out
 
 
 # ── The typed journal ──────────────────────────────────────────────────────
@@ -378,6 +380,10 @@ async def run():
 
 async def run_instinct(code):
     env = dict(INSTINCT_ENV)
+    # Which instinct am I? The creature compares this against the version it
+    # stored in its ledger to tell a REWRITE (version changed) from a re-push
+    # or reconnect (version identical). 0 = the seed, before any IV: arrived.
+    env["IV"] = instinct_version
     # The body senses: wraps Imu/Synth, adds Kata/Motion/Handling/Ear.
     # Organ module state survives hot-swaps (module imported once); attach
     # re-wraps the fresh scope exactly like the sim harness does.
@@ -519,10 +525,13 @@ async def _handle_msg(msg):
     if msg.startswith("TIME:"):
         _set_clock(msg)
         return None
-    await swap_instinct(msg)
+    # Adopt the version BEFORE the swap: run_instinct puts it in the instinct
+    # scope, and a creature that reads its own version one behind cannot tell
+    # a real rewrite from a re-push of the code it is already running.
     if _pending_iv is not None:
         instinct_version = _pending_iv
     globals()["_pending_iv"] = None
+    await swap_instinct(msg)
     return "instinct"
 
 
@@ -555,7 +564,7 @@ def _set_clock(msg):
         print("clock: set failed:", e)
 
 
-def _boot_line(reason):
+def _boot_line(reason, down_s=None):
     # clock token LAST: the spine matches startswith("BOOT:") to detect
     # the announce — a prefix would silently break batch detection
     clock = (" clock={:02d}:{:02d}".format(*time.localtime()[3:5])
@@ -566,6 +575,7 @@ def _boot_line(reason):
                 M5.Power.getBatteryVoltage(), M5.Power.getVBUSVoltage(),
                 M5.Power.isCharging(),
                 WIFI_MODE, HEARTBEAT_INTERVAL, instinct_version, reason)
+            + ("" if down_s is None else " down={}s".format(down_s))
             + clock)
 
 
@@ -746,11 +756,21 @@ async def batch_main():
 
 
 async def live_listener():
-    global ws
+    global ws, _connects, _link_down_ms
     print("ws: connecting to {}:{}".format(SPINE_HOST, SPINE_PORT))
     ws = WebSocket.connect(SPINE_HOST, SPINE_PORT)
     print("ws: connected")
-    ws.send(_boot_line("boot"))
+    # wake= says why this announce happened. The BOOT: line is sent on EVERY
+    # connect, so without this the reader cannot tell a power-on from a
+    # reconnect except by squinting at uptime=. (In batch mode wake= carries
+    # the nap reason — timer/urgent/lowbat — same question, same token.)
+    if _connects == 0:
+        ws.send(_boot_line("poweron"))
+    else:
+        down = (0 if _link_down_ms is None
+                else max(0, (time.ticks_ms() - _link_down_ms) // 1000))
+        ws.send(_boot_line("reconnect", down_s=down))
+    _connects += 1
     await _flush_journal(ws)
     while True:
         msg = await ws.recv()
@@ -768,6 +788,7 @@ async def live_main():
             await live_listener()
         except Exception as e:
             print("ws: error:", e)
+        globals()["_link_down_ms"] = time.ticks_ms()
         print("ws: reconnect in 3s")
         await asyncio.sleep(3)
 

@@ -90,13 +90,28 @@ phase() / set_s()`. **Every constant is an uncalibrated guess as of
   felt; swoosh retained, quieter. Reports per-face off-angle
   distributions — the evidence CONE_DEG is tuned against. Also settles
   whether Y+/Y- need swapping per hand and whether faces ever misread.
-- `3_kata` — put it together, first LLM stage. Only a from-set flight
-  that lands sounds the full pair (swoosh → tone); loose motion gets a
-  thin ghost or nothing — the grammar becomes audible. The kata episode
-  record (flight_ms, peaks, face, off, fluency) becomes the journal's
-  unit; the soul starts shaping what a sloppy landing DESERVES to sound
-  like (the pedagogy question, inherited from the drum's window).
-- `4_sensei` — Familiar returns, clustering completed katas by manner
+- `3_kata` — put it together. **Realized on hardware instead**, as
+  `creatures/kata_master/condition_1` (2026-07-13): both halves in one
+  instinct, swoosh → tone, on the real body. The pedagogy question it
+  raised — what a sloppy landing DESERVES to sound like — is still open
+  and now belongs to the soul in the stages below.
+- `3_phrases` — **the phrase, and the reward.** Cuts chain into a PHRASE
+  (swift, static, swift, static …); a rest ends it; completing one earns
+  a power-up. One player, no opponent. The question this stage answers is
+  narrow and prior to everything after it: **does a phrase read in the
+  journal?** One line per phrase in the game's own grammar —
+  `X+ X- Y- Y- Z+ (power up)` — plus the rests, because an answer must
+  reproduce rhythm as well as shape. Run against the recorded sessions in
+  `*/logs/*/input/imu_reads.jsonl`, so the same human motion can be
+  replayed while the gap threshold changes. See the game description in
+  `creatures/kata_master/README.md`.
+- `4_answer` — **turn-taking.** The creature answers a kata with a kata of
+  its own, played on the synth (with or without swooshes), to invite the
+  player into parts of the movement space they never visit. Echo, vary,
+  extend, or propose — which of those actually opens someone up is not
+  knowable in advance, and is precisely the soul's job. Both sides of the
+  exchange go in the journal, in the same grammar.
+- `5_sensei` — Familiar returns, clustering completed katas by manner
   (face path, duration, vigor shape): recurring forms become named
   techniques, sequences of set→cut→set become sequences. `Form`
   interoception lands (the drum's Groove transposed: level rises under

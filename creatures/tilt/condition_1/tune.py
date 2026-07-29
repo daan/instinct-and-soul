@@ -250,6 +250,9 @@ class TiltTuner(TuneAppBase):
         if msg.startswith("J:"):
             try:
                 t_ms, text = msg[2:].split(":", 1)
+                if text.startswith("LOG: "):
+                    text = text[5:]      # the type marker is for the soul,
+                                         # not for a bench instrument
                 self.log_msg("[dim]t+{:7.1f}s[/dim]  {}".format(int(t_ms) / 1000, text))
                 return
             except ValueError:

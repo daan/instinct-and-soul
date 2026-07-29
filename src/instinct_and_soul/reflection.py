@@ -171,6 +171,34 @@ class VersionStore:
         self._counts = {}       # per-type version counters (filenames, souls)
         for subdir in ("instinct", "experience", "reflections", "crashes", "memory"):
             os.makedirs(os.path.join(self.base, subdir), exist_ok=True)
+        # The journal as its own artifact. Until now a journal line only
+        # reached disk INSIDE a reflection record, so a session that never
+        # reflected — `--max-reflections 0`, the observation runs — kept no
+        # record at all, which contradicts "the record is always
+        # authoritative" (docs/ARCHITECTURE.md). Line-buffered so `tail -f`
+        # works while a session is running.
+        self._journal_f = None
+        try:
+            self._journal_f = open(os.path.join(self.base, "journal.log"),
+                                   "w", buffering=1)
+        except Exception:
+            pass
+
+    def append_journal(self, ts, content, v=None):
+        """One entry of the typed stream, as it enters the buffer. Written
+        at ADD time only — a window put back after a failed reflection is
+        already on disk and must not be duplicated."""
+        if self._journal_f is None:
+            return
+        # ts is wall-clock on the device spine and virtual seconds in the
+        # sim; format each as itself rather than pretending.
+        stamp = (time.strftime("%H:%M:%S", time.localtime(ts))
+                 if ts > 1e9 else "t+{:.1f}s".format(ts))
+        try:
+            self._journal_f.write("{}  {}{}\n".format(
+                stamp, "v{} ".format(v) if v is not None else "", content))
+        except Exception:
+            pass
 
     def next_version(self, kind):
         """The next per-type version number: instinct v1, v2, … reflection
@@ -389,18 +417,27 @@ class ReflectionLoop:
 
     # ── Inputs from host ──────────────────────────────────────────────
 
+    def _record(self, content: str, v=None) -> None:
+        """The one door into the journal: buffer it for the next reflection
+        AND put it on disk. Everything that enters the stream goes through
+        here, so the file cannot silently miss an entry type."""
+        ts = self._now()
+        entry = {"ts": ts, "content": content}
+        if v is not None:
+            entry["v"] = v
+        self.buffer.add(entry)
+        self.store.append_journal(ts, content, v)
+
     def add_message(self, content: str) -> None:
         # Stamp the authoring instinct version: journal entries are never
         # dropped, so the reflection must be able to attribute each entry to
         # the code that wrote it (entries from before a deploy describe the
         # OLD code's behavior — but the world-facts in them are still facts).
-        self.buffer.add({"ts": self._now(), "content": content,
-                         "v": self.instinct_version})
+        self._record(content, self.instinct_version)
 
     def add_operator(self, text: str) -> None:
-        tagged = "OPERATOR: " + text
         self.store.save_operator_command(text)
-        self.buffer.add({"ts": self._now(), "content": tagged})
+        self._record("OPERATOR: " + text)
         # A person typing at the creature is a deliberate act — it triggers a
         # reflection even though ordinary journal traffic no longer does.
         self._operator_pending = True
@@ -408,8 +445,7 @@ class ReflectionLoop:
     def _journal(self, content: str) -> None:
         """Write a spine-authored entry into the creature's own journal, so
         the soul's actions appear in the stream alongside the body's."""
-        self.buffer.add({"ts": self._now(), "content": content,
-                         "v": self.instinct_version})
+        self._record(content, self.instinct_version)
 
     def add_reflect_request(self, reason: str) -> None:
         """The instinct asked to think, and said why. THE trigger: journal
@@ -423,8 +459,7 @@ class ReflectionLoop:
         self.store.save_crash(self.store.next_version("crash"), error_msg)
         # A crash belongs in the stream too, so it has a POSITION relative to
         # the lines around it — <crashed> alone says it happened, not when.
-        self.buffer.add({"ts": self._now(), "content": error_msg,
-                         "v": self.instinct_version})
+        self._record(error_msg, self.instinct_version)
 
     def add_memory_snapshot(self, payload: str) -> None:
         self.store.save_memory(self.store.next_version("memory"), payload)

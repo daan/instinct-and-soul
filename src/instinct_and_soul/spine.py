@@ -31,6 +31,19 @@ def fmt_tokens(n):
     return str(n)
 
 
+def _fmt_uptime(seconds):
+    """A device's uptime, readable. This is the field that says whether a
+    BOOT: line means the board actually rebooted — cause= cannot, being
+    frozen at the last real reset, and the announce is sent on every connect."""
+    if seconds is None:
+        return "unknown"
+    if seconds < 90:
+        return "{}s".format(seconds)
+    if seconds < 5400:
+        return "{:.0f}m".format(seconds / 60)
+    return "{:.1f}h".format(seconds / 3600)
+
+
 class SpineApp(App):
     CSS = """
     #status {
@@ -81,6 +94,15 @@ class SpineApp(App):
         self.device_batch = False
         self.device_napping = False
         self.hb_timeout = HEARTBEAT_TIMEOUT
+        # Does this runtime track its instinct version? Signalled by an iv=
+        # token in its BOOT line; older runtimes have no IV: handler and would
+        # exec the message as instinct code.
+        self.device_iv_capable = False
+        # Have we deployed to this device yet in THIS spine session? Until we
+        # have, a matching iv= means nothing — the device could be carrying a
+        # same-numbered instinct from a previous session (v1 is the seed in
+        # every session), and the seed on disk may have changed since.
+        self.deployed_this_session = False
 
         self.loop = ReflectionLoop(
             creature, llm,
@@ -158,9 +180,11 @@ class SpineApp(App):
     async def _loop_deploy(self, code: str, version: int) -> None:
         if self.board_ws is not None:
             try:
-                if self.device_batch:
-                    # batch runtimes track the version for the next BOOT's
-                    # iv= announcement (skips redundant re-pushes on wake)
+                if self.device_iv_capable:
+                    # the runtime records this as the version it runs, and
+                    # announces it as iv= in its next BOOT — which is what
+                    # lets a reconnect skip the push instead of restarting
+                    # the creature (batch: also skips a re-push on wake)
                     await self.board_ws.send("IV:{}".format(version))
                 await self.board_ws.send(code)
                 self.log_msg("deployed new instinct v{}".format(version), style="cyan")
@@ -170,6 +194,20 @@ class SpineApp(App):
             self.log_msg("instinct v{} saved (no board to deploy to)".format(version), style="dim")
 
     # ── Reflection scheduling ─────────────────────────────────────────
+
+    async def _send_time(self, ws) -> None:
+        """The animal gets the hour: laptop clock + tz, one message. Only
+        runtimes that advertise mode= parse TIME:; older ones would exec it
+        as instinct code. Logged, because a silently missing clock leaves
+        every journal entry stamped t+Nm and nothing says why."""
+        lt = time.localtime()
+        gmtoff = getattr(lt, "tm_gmtoff", 0) or 0
+        try:
+            await ws.send("TIME:{}:{}".format(int(time.time()), gmtoff))
+            self.log_msg("sent clock {} (gmtoff {}s)".format(
+                time.strftime("%H:%M:%S", lt), gmtoff), style="dim")
+        except Exception as e:
+            self.log_msg("clock send failed: {}".format(e), style="bold red")
 
     def _schedule_reflect(self) -> None:
         if self.loop.needs_reflection():
@@ -271,6 +309,7 @@ class SpineApp(App):
         except (asyncio.TimeoutError, Exception):
             pass
         device_iv = None
+        device_uptime = None
         if isinstance(first, str) and first.startswith("BOOT:"):
             self.device_batch = "mode=batch" in first
             for tok in first.split():
@@ -284,6 +323,11 @@ class SpineApp(App):
                         device_iv = int(tok[3:])
                     except ValueError:
                         pass
+                elif tok.startswith("uptime="):
+                    try:
+                        device_uptime = int(tok[7:].rstrip("s"))
+                    except ValueError:
+                        pass
         # The animal gets the hour: laptop clock + tz, one message. Gated on
         # the runtime advertising a mode= token, which is exactly the family
         # that parses TIME: explicitly — older runtimes have no handler and
@@ -291,16 +335,50 @@ class SpineApp(App):
         # `device_batch`, which silently denied the clock to the same runtime
         # running live, leaving it with boot-relative time only.
         if isinstance(first, str) and "mode=" in first:
-            lt = time.localtime()
-            gmtoff = getattr(lt, "tm_gmtoff", 0) or 0
-            await ws.send("TIME:{}:{}".format(int(time.time()), gmtoff))
-        if self.device_batch and device_iv == self.loop.instinct_version:
-            self.log_msg("device runs instinct v{} — no push".format(device_iv), style="dim")
+            await self._send_time(ws)
+        elif isinstance(first, str):
+            # BOOT did not arrive first — a HEARTBEAT can beat it, since the
+            # device's heartbeat task runs independently of the connect
+            # sequence. The receive loop re-checks every BOOT: it sees, so
+            # the clock still lands; say so rather than failing silently.
+            self.log_msg("no BOOT in the first frame ({}...) — waiting for it "
+                         "to send the clock".format(str(first)[:24]), style="dim")
+        self.device_iv_capable = device_iv is not None
+        # A RECONNECT must not restart the creature. Pushing the instinct calls
+        # swap_instinct on the device, which restarts run() and wipes every
+        # local it holds — an open chirp awaiting its outcome, the still/moving
+        # state, the ignored-chirp counter. Walking out of WiFi range and back
+        # should cost nothing. Batch runtimes always had this skip; live ones
+        # never did, because the IV: that teaches a device its own version was
+        # itself gated on batch, so a live device reported iv=0 forever and
+        # never matched.
+        if (self.deployed_this_session and self.device_iv_capable
+                and device_iv == self.loop.instinct_version):
+            # State the OUTCOME, not the mechanism. A BOOT: line is sent on
+            # every connect and its cause= is frozen at the device's last real
+            # reset, so "BOOT" reads as "it rebooted" when usually it did not.
+            # Say plainly whether the creature is still running.
+            self.log_msg(
+                "reconnected — board up {}, instinct v{}, creature NOT "
+                "restarted".format(_fmt_uptime(device_uptime), device_iv),
+                style="bold green")
         else:
-            if self.device_batch:
+            if self.device_iv_capable:
                 await ws.send("IV:{}".format(self.loop.instinct_version))
             await ws.send(self.loop.current_instinct)
-            self.log_msg("sent instinct v{}".format(self.loop.instinct_version), style="dim")
+            # Name why the creature is about to restart, so a restart is never
+            # something the reader has to infer from a missing line.
+            if not self.device_iv_capable:
+                why = "runtime does not track versions"
+            elif device_uptime is not None and device_uptime < 60:
+                why = "board just powered on"
+            elif device_iv != self.loop.instinct_version:
+                why = "board had v{}".format(device_iv)
+            else:
+                why = "first deploy of this session"
+            self.deployed_this_session = True
+            self.log_msg("sent instinct v{} — creature RESTARTED ({})".format(
+                self.loop.instinct_version, why), style="bold yellow")
 
         try:
             pending = [first] if first is not None else []
@@ -335,6 +413,17 @@ class SpineApp(App):
                     self._schedule_reflect()
                 elif msg.startswith("MEM:"):
                     self.loop.add_memory_snapshot(msg[4:])
+                elif msg.startswith("BOOT:"):
+                    # A BOOT can arrive here rather than as the first frame
+                    # (a HEARTBEAT can beat it), and it arrives again on every
+                    # device reboot mid-session. Either way the RTC is now
+                    # unset, so re-send the clock — this is what keeps journal
+                    # entries stamped with the hour instead of t+Nm.
+                    self.log_msg(msg, style="bold yellow")
+                    self.loop.add_message(msg)
+                    self.device_batch = "mode=batch" in msg
+                    if "mode=" in msg:
+                        await self._send_time(ws)
                 else:
                     self.loop.add_message(msg)
                     # THE trigger. Journal traffic alone no longer reflects —

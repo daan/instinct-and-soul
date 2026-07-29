@@ -6,6 +6,60 @@ Detection lives ON the device (the Kata/Motion/Handling organs), the voice
 is MIDI over a wire — no network in the sound path; WiFi carries only the
 journal.
 
+## The game
+
+A kata is one **cut**: a swift action, then a static pose held still. The
+body sonifies both halves live — a pan-flute swoosh that rides the motion
+and dies with it, then a vibraphone tone the moment the pose settles. The
+tone's pitch is the ORIENTATION of that pose, classified from gravity
+alone: palm down, palm up, fingers up, fingers down, and the two blade
+poses. Six faces, no compass. The classification is deliberately coarse
+and its boundaries are ambiguous — a pose halfway between two faces will
+pick one. That ambiguity is accepted: the point is that the hand's
+orientation is AUDIBLE, not that it is measured.
+
+Cuts chain into a **phrase**: swift, static, swift, static — a short
+sequence the human composes by moving. A phrase ends when they rest.
+Completing one earns a reward sound, a small power-up. The game says
+"that was a phrase", not "that was correct".
+
+    X+ X- Y- Y- Z+  (power up)
+
+That is the **one-player training mode**, and it is what condition_1
+almost is today: it sounds every cut, but it does not yet know a phrase
+from a series of unrelated cuts, and there is no reward.
+
+## The creature's job
+
+The creature is not a metronome and not a scorer. Its task is to **invite
+the player to explore the kata movement space** — the space of poses and
+the transitions between them. Most people, left alone, find three
+comfortable poses and stay there.
+
+It invites by **answering a kata with a kata of its own**: playing a
+phrase back on the synth, with or without the swooshes. Turn-taking. An
+answer can echo what they just did, vary it, extend it, or propose
+something they have not tried — and which of those actually opens a person
+up is not knowable in advance.
+
+**That is the soul's work.** The instinct can segment a phrase, sound it,
+and play one back; it cannot know what kind of answer makes someone
+explore. Finding that interaction is what the LLM is for. So the journal
+must carry both sides of every exchange — what they played, what the
+creature answered, and what they did next — in the same vocabulary, or the
+soul has nothing to reason from.
+
+## Stages
+
+    1_swoosh     the flute gate: a swift action, voiced live      (done)
+    2_tones      the pose tone: six gravity faces, sounded once   (done)
+    condition_1  both halves together on the real body            (done)
+    3_phrases    cuts grouped into phrases + the reward           (next)
+    4_answer     the creature plays a phrase back; turn-taking
+
+Stages 1-3 need no opponent. They establish that the body can HEAR a
+phrase before anything tries to answer one.
+
 ## Structure: every condition is a COMPLETE, self-contained creature
 
     creatures/kata_master/

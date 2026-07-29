@@ -537,7 +537,16 @@ def _set_clock(msg):
     global _clock_set
     try:
         u, off = msg[5:].split(":")
-        local = int(u) + int(off) - 946684800   # unix epoch -> MicroPython epoch
+        # The epoch is a BUILD property, not a given: MicroPython ports use
+        # 2000-01-01, others (and some M5 builds) use the unix 1970 epoch.
+        # Assuming 2000 on a 1970-epoch board shifts the DATE back exactly
+        # 10957 days — a whole number, so hour:minute stay correct while the
+        # YEAR lands in 1996. That failed silently: BOOT printed the right
+        # clock=HH:MM (it reads localtime()[3:5]) while every journal entry
+        # fell back to t+Nm (the seed tests localtime()[0] >= 2020). Detect
+        # it instead of assuming.
+        epoch_off = 946684800 if time.gmtime(0)[0] == 2000 else 0
+        local = int(u) + int(off) - epoch_off
         tm = time.gmtime(local)
         machine.RTC().datetime((tm[0], tm[1], tm[2], tm[6], tm[3], tm[4], tm[5], 0))
         _clock_set = True

@@ -91,6 +91,13 @@ class TuneAppBase(App):
 
     def log_msg(self, msg, style=""):
         ts = time.strftime("%H:%M:%S")
+        # The device tags journal entries by type (LOG:/REFLECTION:/UPDATE:)
+        # so the spine and the soul can tell its own acts from the body's
+        # reports. In the tuner there is no soul and nothing else in the
+        # stream, so a "LOG:" on every single line is pure noise — drop it
+        # for display. Any other marker is rare and worth seeing.
+        if isinstance(msg, str) and msg.startswith("LOG: "):
+            msg = msg[5:]
         if self._log_file is not None:
             try:
                 plain = re.sub(r"\[/?[a-z ]+\]", "", str(msg))

@@ -46,6 +46,20 @@ async def run():
     unset_since = None
     cand = None                   # (face, since) awaiting FACE_HOLD_S
 
+    # send() only writes to the record; reflect() is the one call that
+    # summons the soul, and it costs a reflection. The 20 s report window is
+    # NOT the place for it — that is a reporting cadence, and asking there
+    # would summon the soul three times a minute. What actually changes is
+    # whether this body is being PRACTISED with: picked up, put down. A run
+    # that has just ended is the whole thing worth thinking about, and it is
+    # the one reading a reflex cannot do for itself.
+    last_state = None
+    table_since = None
+    run_start = time.ticks_ms() / 1000.0
+    run_gusts = 0
+    run_set = 0
+    run_overruns = 0
+
     win_start = time.ticks_ms() / 1000.0
     gusts = []
     offs = {}
@@ -125,6 +139,37 @@ async def run():
         if Kata.overrun():
             overruns += 1
 
+        # ── picked up / put down: the only thing worth waking the soul ────
+        state = Handling.state()
+        if state != last_state:
+            if last_state is not None:
+                live = state != "table"
+                was_live = last_state != "table"
+                if was_live and not live:
+                    # A practice run just ended — the whole run is the
+                    # subject. Fold in the window still open, or a run
+                    # shorter than one report window looks empty.
+                    reflect("put down after {:.0f}s of practice: {} gusts, "
+                            "{} of them from the set, {} overruns, fluency "
+                            "{:.2f}. Did I sound like the motion felt?".format(
+                                now - run_start,
+                                run_gusts + len(gusts),
+                                run_set + sum(f[2] for f in flights),
+                                run_overruns + overruns, Motion.fluency()))
+                    table_since = now
+                elif live and not was_live:
+                    # NOT Handling.alone_s(): a real touch resets it, and by
+                    # the time the state has flipped the touch has happened,
+                    # so it always reads 0 here. Time it myself.
+                    reflect("picked up after {:.0f}s alone — a run is "
+                            "starting".format(
+                                now - table_since if table_since else 0.0))
+                    run_start = now
+                    run_gusts = 0
+                    run_set = 0
+                    run_overruns = 0
+            last_state = state
+
         # REPORT every ~20 s: both halves, side by side.
         if now - win_start > 20.0:
             span = now - win_start
@@ -146,14 +191,9 @@ async def run():
                  "phase {} | state {} alone {:.0f}s | fluency {:.2f}".format(
                      span, gstats, n_set, tstats, overruns, Kata.phase(),
                      Handling.state(), Handling.alone_s(), Motion.fluency()))
-            # send() only writes to the record; reflect() is what summons the
-            # soul, and it costs. A closed window is the smallest span where
-            # the shape of the practice is visible rather than a single gust
-            # — that reading is the soul's work, not a reflex's.
-            reflect("window closed after {:.0f}s: {}, {} from the set, {}, "
-                    "{} overruns, fluency {:.2f}, phase {}".format(
-                        span, gstats, n_set, tstats, overruns,
-                        Motion.fluency(), Kata.phase()))
+            run_gusts += len(gusts)
+            run_set += n_set
+            run_overruns += overruns
             win_start = now
             gusts = []
             offs = {}

@@ -19,12 +19,9 @@ async def run():
                              # which from inside a reflex
 
     # ── tempo (mine to retune) ────────────────────────────────────────────
-    HINT_AFTER_S = 60.0      # first hint once stillness has run this long.
-                             # !! BENCH VALUE. Worn, this is 240 (4 min) —
-                             # measured comfortable on this person. It is 60
-                             # here only so a human can hear a chirp without
-                             # sitting motionless for four minutes; at 60 a
-                             # real wearing would be badgered.
+    HINT_AFTER_S = 240.0     # first hint once stillness has run this long.
+                             # Measured comfortable on this person (they have
+                             # never tapped to hush me at this threshold).
     HINT_EVERY_S = 180.0     # spacing before the SECOND hint in a stretch
     HINT_BACKOFF = 2.0       # ...and each unanswered hint doubles that wait.
                              # Without this, one long sit earns a chirp every
@@ -38,12 +35,9 @@ async def run():
                              # generous on purpose: they have to reach up
                              # and find me, which takes a moment
     HUSH_GRACE_S = 1800.0    # hushed: silent this long, no grudge after
-    SAMPLE_EVERY_S = 30.0    # a plain state line this often.
-                             # !! BENCH VALUE. Worn, this is 300 (5 min) —
-                             # at 30 s a day of wearing is ~1000 lines of
-                             # nothing-happened for my next reflection to
-                             # read. It is 30 here only so a human watching
-                             # the journal can see the body is alive.
+    SAMPLE_EVERY_S = 300.0   # a plain state line this often. At 30 s (the
+                             # bench value) a day of wearing is ~1000 lines of
+                             # nothing-happened for my next reflection to read.
     ROLLUP_EVERY_S = 1800.0  # the ledger line, and the one reflection I ask
                              # for on a schedule rather than in response to
                              # something (was 3600)
@@ -51,6 +45,12 @@ async def run():
                              # the ledger counts it and my patience resets.
                              # Shorter motion is still reported — it just
                              # doesn't count as leaving the chair.
+    ANSWER_MIN_S = 1.0       # motion shorter than this does not count as an
+                             # answer to a chirp. ANY motion answers (their
+                             # reply is a 3-6 s shift, well under BREAK_S) —
+                             # but with no floor at all a 0.4 s twitch scored
+                             # as a reply. A guess: I report what I reject so
+                             # it can be tuned from data instead of re-guessed.
     MIN_STATE_S = 0.4        # a state must hold this long before I report
                              # the change, so a gyro hovering at the
                              # threshold cannot chatter. Short enough that a
@@ -108,40 +108,61 @@ async def run():
     LEDGER = "ledger"
     FLUSH_EVERY_S = 10.0
 
+    # THREE LIFECYCLES, NEVER CONFLATED.
+    #
+    # My BODY can power on and die. My LINK to the gateway can drop and come
+    # back. My INSTINCT — this file — can be replaced. These are independent,
+    # and reading one as another is the mistake that cost a whole afternoon:
+    # the runtime announces itself with a line beginning BOOT: on EVERY
+    # connect, so "BOOT" looked like "it rebooted" when almost always the
+    # board had been running for an hour.
+    #
+    # I can tell them apart because Mem is wiped by a power cycle and not by
+    # anything else, and because IV tells me which instinct I am:
+    #
+    #   no ledger              -> BODY: I just woke. Nothing before this.
+    #   ledger, IV changed     -> INSTINCT: I was rewritten. I kept living.
+    #   ledger, IV unchanged   -> my code was re-pushed. Nothing changed.
+    #
+    # Only the first of those is a new life, so only the first greets.
     led = Mem.latest(LEDGER)
     waking = led is None
     if waking:
         led = {"worn_since": now, "still": 0.0, "longest": 0.0,
                "breaks": 0, "chirps": 0, "taps": 0, "restarts": 0,
                "hushed_until": 0.0, "hint_gap": HINT_EVERY_S,
-               "last_hint": -1e9, "ignored_run": 0,
+               "last_hint": -1e9, "ignored_run": 0, "iv": IV,
                "h_start": now, "h_still": 0.0, "h_longest": 0.0,
                "h_breaks": 0, "h_chirps": 0, "h_taps": 0}
-        note("awake, new ledger. battery {}mV".format(
+        note("BODY awake — new ledger, battery {}mV".format(
             M5.Power.getBatteryVoltage()))
     else:
         led = dict(led)            # work on a copy; flush() writes it back
         led["restarts"] = led.get("restarts", 0) + 1
-        # RESTART, not "rewrite" — my code is replaced for several reasons and
-        # only one of them is that I changed my mind. A spine reconnect
-        # restarts me too, and calling that a rewrite made it look like I had
-        # been thinking when I had not.
-        note("awake again (restart #{}) — ledger kept: worn {:.0f}m, "
-             "still {:.0f}m, {} breaks, {} chirps".format(
-                 led["restarts"], (now - led["worn_since"]) / 60,
-                 led["still"] / 60, led["breaks"], led["chirps"]))
+        was = led.get("iv", IV)
+        led["iv"] = IV
+        if IV != was:
+            note("INSTINCT v{} — replaced v{}. I kept living: worn {:.0f}m, "
+                 "still {:.0f}m, {} breaks, {} chirps".format(
+                     IV, was, (now - led["worn_since"]) / 60,
+                     led["still"] / 60, led["breaks"], led["chirps"]))
+        else:
+            note("my code was re-pushed unchanged (still v{}) — nothing about "
+                 "me is different; worn {:.0f}m".format(
+                     IV, (now - led["worn_since"]) / 60))
     # Ledgers written before these keys existed are still valid; fill the gaps.
     led.setdefault("last_hint", -1e9)
     led.setdefault("ignored_run", 0)
+    led.setdefault("iv", IV)
 
     def flush():
         Mem.push(LEDGER, dict(led), 1)   # maxlen 1: a single-cell slot
 
     flush()
     if waking:
-        # The greeting is for WAKING, not for every time my code is swapped.
-        # Trilling on each restart meant a reconnect sounded exactly like a
-        # chirp, and they had no way to tell the difference.
+        # The greeting belongs to the BODY lifecycle alone. Trilling on each
+        # restart meant a reconnect sounded exactly like a chirp, and they had
+        # no way to tell the two apart by ear.
         await sound(VOL, TRILL, 30)
 
     # working state — deliberately NOT in the ledger: an open hint and the
@@ -236,12 +257,19 @@ async def run():
                     # chirp with a 3-6 s shift, well under BREAK_S, so gating
                     # the answer on BREAK_S scored every real reply as ignored.
                     if pending is not None and now - pending[0] <= WATCH_S:
-                        note("...that came {:.0f}s after my chirp (moved "
-                             "{:.0f}s)".format(now - pending[0], dur))
-                        pending = None
-                        led["ignored_run"] = 0     # it worked; start over
-                        led["hint_gap"] = HINT_EVERY_S
-                        await sound(VOL, DOWN)
+                        if dur >= ANSWER_MIN_S:
+                            note("...that came {:.0f}s after my chirp (moved "
+                                 "{:.1f}s)".format(now - pending[0], dur))
+                            pending = None
+                            led["ignored_run"] = 0     # it worked; start over
+                            led["hint_gap"] = HINT_EVERY_S
+                            await sound(VOL, DOWN)
+                        else:
+                            # too brief to call an answer — but say so, or the
+                            # floor is a number nobody can ever check
+                            note("(a {:.1f}s twitch {:.0f}s after my chirp — "
+                                 "too brief to call an answer)".format(
+                                     dur, now - pending[0]))
                     move_peak = 0.0
                 state, state_since = raw, cand_since
                 cand_state = None

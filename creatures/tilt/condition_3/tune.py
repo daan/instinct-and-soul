@@ -1,5 +1,5 @@
 """
-tune.py — interactive tuner for the tilt condition_2 creature.
+tune.py — interactive tuner for the tilt condition_3 creature.
 
 This body is a PLAIN StickS3 — internal speaker and IMU, nothing attached.
 Two things to settle before anyone wears it for real: the CRICKET
@@ -7,11 +7,11 @@ vocabulary (trill / up / down — the test is whether you can ignore it) and
 the POSTURE read on a real back.
 
 Run:
-    tune creatures/tilt/condition_2
+    tune creatures/tilt/condition_3
 
 Posture / feedback:
     state                        what the SEED sees: still / lean-from-ref /
-                                 rot — the condition_2 calibration view
+                                 rot — the condition_3 calibration view
     posture                      live angle/stillness stream (worn)
     setref                       capture upright (sit the way you mean it)
     verbs                        movement-verb stream (MICRO_SHIFT / SHIFT /
@@ -67,7 +67,7 @@ TUNABLES = (
 )
 
 DEPLOY_SHORTCUTS = {
-    "baseline": "creatures/tilt/condition_2/seed_instinct.py",
+    "baseline": "creatures/tilt/condition_3/seed_instinct.py",
 }
 
 
@@ -77,7 +77,7 @@ def clamp(v, lo, hi):
 
 class TiltTuner(TuneAppBase):
     INITIAL_INSTINCT = INSTINCT_IDLE
-    STATUS_LABEL = "tilt-c2"
+    STATUS_LABEL = "tilt-c3"
 
     def __init__(self):
         super().__init__()

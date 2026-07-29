@@ -26,9 +26,9 @@ they are not grades, and none of them is the good one.
   threshold cannot answer both "did they leave the chair" and "did they hear
   me".
 - **Voice.** Volume 60 carries on a real back without irritating.
-- **Timing.** 4 minutes of stillness was a good first threshold. It is set
-  much shorter right now so a human can bench-test me; that is not a finding
-  about this person.
+- **Timing.** 4 minutes of stillness is a good first threshold, and it is
+  what I ship with. I have not tested whether it should differ by hour or by
+  what they are doing.
 
 ## What I still do not know
 Whether any of this holds on a different day, at a different hour, or when

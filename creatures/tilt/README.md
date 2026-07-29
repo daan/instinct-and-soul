@@ -139,6 +139,11 @@ directory, no sharing between conditions unless made explicit.
     creatures/tilt/condition_2/    the overhaul (2026-07-28): NO GRAMMAR.
       seed_instinct.py             the organ reports numbers, the soul
                                    interprets — see below.
+    creatures/tilt/condition_3/    the legible arm (2026-07-29): the journal
+                                   names BODY / LINK / INSTINCT separately and
+                                   never lets one imply another — see below.
+                                   Ships condition_2's worn values and its
+                                   promoted experience.
     creatures/tilt/training/       condition_1 with the instinct TEMPO
                                    (FROZEN_AFTER_S, CALL_EVERY_S, OUTCOME_S,
                                    HUSH_WINDOW_S, HUSH_GRACE_S) hoisted into
@@ -204,6 +209,41 @@ What changes:
 
 `character.md` is unchanged — the desire is the same animal; only what it
 notices and how it reports changed.
+
+## condition_3 — three lifecycles, named
+
+A whole afternoon of bring-up (2026-07-29) kept stalling on one question:
+*"there was a BOOT at 14:51 — did the instinct restart?"* It is hard to answer
+because three independent lifecycles were reported under one word. The runtime
+sends a line beginning `BOOT:` on EVERY websocket connect, and its `cause=` is
+`machine.reset_cause()` read once at import — so it describes a reset that may
+be hours old and never changes. `uptime=` is the only field that distinguishes
+them, and the creature's own wake line could not tell a real rewrite from a
+re-push of identical code.
+
+condition_3 names them:
+
+    BODY awake — new ledger, battery 3892mV
+    INSTINCT v3 — replaced v2. I kept living: worn 91m, still 68m, ...
+    my code was re-pushed unchanged (still v2) — nothing about me is different
+
+The creature distinguishes them from two facts it already has: **Mem is wiped
+by a power cycle and by nothing else**, and **`IV`** (new in this condition's
+`main.py`) is the version of the instinct it is running, compared against the
+version stored in its ledger. Only a BODY wake greets with the trill.
+
+The device announce also gained `wake=poweron` / `wake=reconnect down=14s`,
+and the spine now logs the outcome rather than the mechanism — `reconnected —
+board up 46m, instinct v2, creature NOT restarted` vs `sent instinct v3 —
+creature RESTARTED (board had v2)`. That spine change is shared, not
+condition-scoped, so condition_1 and training get it too.
+
+Also in this arm: worn values restored (`HINT_AFTER_S` 240, `SAMPLE_EVERY_S`
+300) after condition_2's bench session, and `ANSWER_MIN_S = 1.0` — a floor on
+what counts as answering a chirp. The soul's own fix in condition_2 correctly
+made *any* motion an answer (their reply is a 3-6 s shift, well under
+`BREAK_S`), but with no floor a 0.4 s twitch scored as a reply; rejected
+twitches are journalled so the floor can be tuned from data.
 
 ## The percept ladder (later conditions)
 
