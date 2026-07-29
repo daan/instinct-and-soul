@@ -55,8 +55,10 @@ EP_SETTLE_S = 1.5    # stillness this long closes a motion episode
 SHIFT_DEG = 7.0      # lean moved this far AND stuck -> SHIFT (else MICRO)
 STRETCH_DEG = 25.0   # peak excursion beyond this (but returning) -> FULL_STRETCH
 AWAY_S = 45.0        # motion longer than this = they left the chair (MOVED_OFF)
-FLAVOR_UP_DEG = 8.0  # |lean| within this of upright -> "upright-ish"
-FLAVOR_FWD_DEG = 12.0  # fwd beyond this -> "slumped-ish" (back: "reclined-ish")
+FLAVOR_UP_DEG = 8.0  # |lean| within this of the mounting zero -> "level-ish"
+FLAVOR_FWD_DEG = 12.0  # UNUSED — _flavor() bands on FLAVOR_UP_DEG alone. Kept
+                     # (and still in the tuner's TUNABLES) only so a `set` on
+                     # it doesn't error; it has no effect on the flavor words.
 
 TAP_G = 1.2          # accel-magnitude deviation (g) that counts as a tap on
                      # the housing — knuckle taps measure well above body
@@ -214,10 +216,10 @@ def _flavor(grav):
     fwd = math.degrees(math.atan2(grav[2], -grav[0]))
     side = math.degrees(math.atan2(grav[1], -grav[0]))
     if abs(fwd) <= FLAVOR_UP_DEG and abs(side) <= FLAVOR_UP_DEG:
-        return "upright-ish"
+        return "level-ish"
     if abs(side) > abs(fwd):
         return "sideways-ish"
-    return "slumped-ish" if fwd > 0 else "reclined-ish"
+    return "forward-ish" if fwd > 0 else "backward-ish"
 
 
 _posture = _PostureState()
@@ -296,8 +298,10 @@ class _Posture:
         return f
 
     def flavor(self):
-        """The current lean as a hedged word: upright-ish / slumped-ish /
-        reclined-ish / sideways-ish. Descriptive, never a verdict."""
+        """The current lean as a hedged word: level-ish / forward-ish /
+        backward-ish / sideways-ish. Purely directional — where gravity
+        sat, with no pole named as the good one. Descriptive, never a
+        verdict."""
         return _flavor(_posture.grav)
 
     def lean(self):

@@ -101,7 +101,7 @@ except ImportError:
     CONFIG_SOURCE = "defaults"
 
 # ── Connectivity policy (edit HERE — no config files) ──────────────────────
-WIFI_MODE = "live"    # "live": always connected (the kata way).
+WIFI_MODE = "live"     # "live": always connected (the kata way).
                        # "batch": radio OFF by default; wakes on boot, every
                        # FLUSH_EVERY_S, on send(..., urgent=True), on CRASH,
                        # and once on low battery — syncs the buffered journal,

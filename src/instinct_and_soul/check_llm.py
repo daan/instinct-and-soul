@@ -5,7 +5,7 @@ Usage:
     check-llm                          # ping the default LLM from .config/config.toml
     check-llm --llm openrouter         # ping a specific profile in .config/llm/
     check-llm creatures/sticks3        # full reflection-shaped test using
-                                       # the creature's system_prompt.md
+                                       # the creature's embodiment.md
     check-llm creatures/sticks3 --llm openrouter
 
 The simple ping verifies api/model/key/base_url are valid.
@@ -50,9 +50,9 @@ async def _run(creature_path, llm_name):
         print("profile: (from .config/config.toml or fallback)")
 
     if creature_path:
-        sp = os.path.join(creature_path, "system_prompt.md")
+        sp = os.path.join(creature_path, "embodiment.md")
         if not os.path.isfile(sp):
-            raise SystemExit("check-llm: no system_prompt.md in {}".format(creature_path))
+            raise SystemExit("check-llm: no embodiment.md in {}".format(creature_path))
         with open(sp) as f:
             system_prompt = f.read()
         user_message = _REFLECTION_USR
@@ -126,7 +126,7 @@ async def _run(creature_path, llm_name):
 def main():
     parser = argparse.ArgumentParser(description="Check that an LLM profile works for spine.")
     parser.add_argument("creature_path", nargs="?", default=None,
-                        help="Optional creature dir; uses its system_prompt.md for a reflection-shaped test")
+                        help="Optional creature dir; uses its embodiment.md for a reflection-shaped test")
     parser.add_argument("--llm", default=None, metavar="NAME",
                         help="LLM profile name; overrides .config/config.toml")
     args = parser.parse_args()

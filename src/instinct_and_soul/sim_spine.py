@@ -32,7 +32,7 @@ from .creature_sim.fake_m5 import _M5
 from .creature_sim.runner import _neutralize_injected_imports
 from .creature_sim.organs import load_organs
 from .llm import load_llm
-from .reflection import Creature, ReflectionLoop
+from .reflection import REFLECT_PREFIX, Creature, ReflectionLoop
 from .instinct_tools import Calc
 
 
@@ -122,11 +122,12 @@ class _RTAsyncio:
         return getattr(asyncio, name)
 
 
-def _build_scope(*, send, aio, imu, speaker, synth, mem, m5):
+def _build_scope(*, send, reflect, aio, imu, speaker, synth, mem, m5):
     return {
         "__name__":   "__instinct__",
         "__builtins__": __builtins__,
         "send":       send,
+        "reflect":    reflect,
         "asyncio":    aio,
         "time":       time,
         "math":       math,
@@ -339,6 +340,18 @@ class SimSpine:
             return granted
         return send
 
+    def _make_reflect(self):
+        def reflect(reason):
+            """Ask the soul to think, and say why — the same call the device
+            runtime provides, so one seed runs in both places. Here it maps
+            onto the sim's existing warrant path; the sim's own trigger
+            cadence (reflect_every / urgent budget) is unchanged."""
+            self.loop.add_message("{} {}".format(REFLECT_PREFIX, str(reason).strip()))
+            self.loop.add_reflect_request(str(reason).strip())
+            self._urgent_pending = True
+            asyncio.create_task(self._maybe_reflect())
+        return reflect
+
     async def _body_sleep_ms(self, n):
         """The instinct's sleep: a real sleep, then — in budgeted mode — freeze
         at the reflection deadline until the swap releases the body."""
@@ -357,7 +370,7 @@ class SimSpine:
     def _start_instinct_task(self, code: str) -> None:
         self._body_tasks = []
         scope = _build_scope(
-            send=self._make_send(), aio=_RTAsyncio(self),
+            send=self._make_send(), reflect=self._make_reflect(), aio=_RTAsyncio(self),
             imu=self.imu, speaker=self.speaker, synth=self.synth, mem=self.mem, m5=self.m5,
         )
         organ_names = ()

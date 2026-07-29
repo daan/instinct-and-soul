@@ -41,6 +41,14 @@ class MessageBuffer:
         msgs, self._buffer = self._buffer, []
         return msgs
 
+    def put_back(self, msgs: list[dict]) -> None:
+        """Return a drained window to the front of the buffer, preserving
+        order. Used when a reflection fails: the window was already taken
+        out, and without this it would be lost from the creature's history
+        entirely — which, once reflections are rare, can mean hours."""
+        if msgs:
+            self._buffer[:0] = msgs
+
     def has_pending(self) -> bool:
         return bool(self._buffer)
 

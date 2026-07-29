@@ -2,7 +2,7 @@
 replay.py — re-ask stored reflection prompts, offline.
 
 Every reflection JSON stores its `prompt` verbatim, and the session dir keeps
-the `system_prompt.md` that was in force. So asking "would the soul have
+the `embodiment.md` that was in force. So asking "would the soul have
 written working code?" needs no device, no session, no simulator — just send
 it again. Same shape as check_llm.py, with real prompts.
 
@@ -100,7 +100,7 @@ async def _ask(paths, llm_name, out_dir, system_override=None):
             print("{}: no stored prompt — skipped".format(path))
             continue
         session = os.path.dirname(os.path.dirname(os.path.abspath(path)))
-        system = override_text or open(os.path.join(session, "system_prompt.md")).read()
+        system = override_text or open(os.path.join(session, "embodiment.md")).read()
 
         name = _name(path, session)
         if os.path.exists(os.path.join(out_dir, name + ".txt")):

@@ -22,8 +22,12 @@ epistemology. Two rules govern every token:
 
 1. **Verbs about movement, never judgments about form.** The device never
    says "you're sitting wrong"; it says "you've been a statue." Posture
-   words are descriptive and hedged (`slumped-ish`, `upright-ish`) —
-   flavors of where gravity sat, not verdicts. What any of it MEANS —
+   words are descriptive, hedged, and purely DIRECTIONAL (`forward-ish`,
+   `level-ish`) — flavors of where gravity sat, with no pole named as the
+   good one. (The vocabulary was `slumped-ish`/`upright-ish` until
+   2026-07-28; "slumped" was the one pejorative in an otherwise neutral
+   set, and it fired most often, so the journal's commonest form-word
+   carried exactly the judgment this rule forbids.) What any of it MEANS —
    when stillness is a problem, when it's a person concentrating and
    best left alone — is the soul's judgment, revisable at reflection.
 2. **Everything the creature DOES ships as a reafference triplet** —
@@ -34,12 +38,12 @@ epistemology. Two rules govern every token:
 
 ### Movement verbs (the body's history)
 
-    STATIC(22min, slumped-ish)     a stillness stretch, reported at
+    STATIC(22min, forward-ish)     a stillness stretch, reported at
                                    milestones (10/20/40min...) and at its
                                    end; flavor from the lean at the time
     MICRO_SHIFT                    a small adjustment inside a sit — weight
                                    shift, fidget; brief, posture unchanged
-    SHIFT(upright-ish)             a posture change that STUCK (new lean
+    SHIFT(level-ish)               a posture change that STUCK (new lean
                                    flavor held after the motion)
     FULL_STRETCH                   a big excursion that returned — arms,
                                    arch, roll; seconds long, large angles
@@ -50,10 +54,16 @@ epistemology. Two rules govern every token:
                                    distribution moved — low / ok / lively.
                                    A statistic, not a scold.
 
-Flavors (from Posture.lean(), coarse on purpose): `upright-ish` (within
-~8 deg), `slumped-ish` (forward past the slouch band), `reclined-ish`
-(backward), `sideways-ish`. Numbers stay out of the flavor words; the
-raw angles ride along only in the hourly summary.
+Flavors (from Posture.lean(), coarse on purpose): `level-ish` (within
+~8 deg of the MOUNTING zero), `forward-ish`, `backward-ish`,
+`sideways-ish`. Numbers stay out of the flavor words; the raw angles
+ride along only in the hourly summary.
+
+The zero is the MOUNTING, not the wearer: `_flavor()` reads raw gravity
+in the device frame and ignores the captured upright, so a body whose
+natural neck-mount sits a few degrees forward reads `forward-ish`
+permanently, and `setref` does not move it. A flavor that never changes
+carries no information to the soul — see "the flavor zero" below.
 
 ### Feedback and body tokens
 
@@ -126,6 +136,9 @@ directory, no sharing between conditions unless made explicit.
       organs.py -> lib/organs.py   (internal symlink for the sim bench)
       seed_instinct.py + prompts   the mind
       tune.py, recipes.py          audition + calibration tools
+    creatures/tilt/condition_2/    the overhaul (2026-07-28): NO GRAMMAR.
+      seed_instinct.py             the organ reports numbers, the soul
+                                   interprets — see below.
     creatures/tilt/training/       condition_1 with the instinct TEMPO
                                    (FROZEN_AFTER_S, CALL_EVERY_S, OUTCOME_S,
                                    HUSH_WINDOW_S, HUSH_GRACE_S) hoisted into
@@ -149,6 +162,48 @@ directory, no sharing between conditions unless made explicit.
 3. `deploy baseline` — live-run the seed from the tuner, no spine.
 
 Then sessions: `spine creatures/tilt/condition_1 [--max-reflections N]`.
+
+## condition_2 — moving the interpretation boundary down
+
+condition_1 pre-digests: the organ names motion (`SHIFT`, `FULL_STRETCH`)
+and the instinct names its own acts (`ACT#7 INTENT invite-movement`), so
+by the time a sitting stretch reaches the soul it has already been called
+"a statue". condition_2 stops doing that. The journal carries a
+timestamp, numbers, and the few things that happened:
+
+    17:29 chirped, soft — still 4.0m | lean +4,+1
+    17:31 tap (nothing of mine was open)
+    17:56 moved 82s, peak rot 126 | now still again | lean -2,-2
+    18:00 hour: still 58m of 60m, longest 29.8m, 3 breaks, 6 chirps, 2 taps
+
+What changes:
+
+- **The zero is the wearer, not the strap.** The seed calls
+  `set_upright()` after the first 20 s of stillness and journals
+  `lean_ref()` — degrees from the upright THEY gave it. (condition_1's
+  flavors are measured from the mounting, which on a neck mount sits
+  ~15-20 deg forward, so its wearer read `slumped-ish` permanently no
+  matter how they sat. `Posture.lean()` still reports the raw strap
+  angle; `lean_ref()` is the one to journal.)
+- **`Posture.rot()` is exposed** — the smoothed gyro magnitude in dps
+  that `still_s()` is derived from. The soul sees the measurement, not
+  only the verdict.
+- **One tap, no counting.** `Tap.tapped()` fires once per tap. The
+  burst/x2 machinery still exists and is unused.
+- **Two timescales.** A hint after ~4 min of stillness, and an hourly /
+  daily ledger so reflection can reason about a day rather than the last
+  ten minutes.
+- **Hints back off.** Each unanswered chirp doubles the wait (capped at
+  30 min), reset by any real break or a hush. Without this the flat
+  3-minute spacing produced 15 chirps in the first simulated hour — a
+  nag, not an animal. If they aren't answering, asking oftener is the
+  wrong reply.
+- **The verb/flavor layer survives, unused.** `Posture.verb()` and
+  `flavor()` still work; the embodiment tells the soul it is free to
+  ignore them. Removing the mandate, not the capability.
+
+`character.md` is unchanged — the desire is the same animal; only what it
+notices and how it reports changed.
 
 ## The percept ladder (later conditions)
 

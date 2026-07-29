@@ -102,6 +102,11 @@ async def run():
             if pending is not None and now - pending[1] <= HUSH_WINDOW_S:
                 send("ACT#{} OUTCOME hushed (tap x{} within {:.0f}s)".format(
                     pending[0], tb[1], now - pending[1]))
+                # send() only writes to the record; reflect() is the one call
+                # that summons the soul, and it costs. Being hushed is the
+                # clearest answer this person ever gives me.
+                reflect("hushed {:.0f}s after ACT#{} — they heard me and "
+                        "said no".format(now - pending[1], pending[0]))
                 pending = None
                 hushed_until = now + HUSH_GRACE_S
                 calls_this_freeze = 0            # no grudges
@@ -133,6 +138,9 @@ async def run():
             send("BATTERY({}mV{})".format(
                 M5.Power.getBatteryVoltage(),
                 ", charging" if M5.Power.isCharging() else ""))
+            reflect("hour closed: {} moves, variety {}, flavors {}. Is my "
+                    "timing right for this person?".format(
+                        hour_moves, rating, hour_flavors or ["none"]))
             hour_start = now
             hour_moves = 0
             hour_flavors = []

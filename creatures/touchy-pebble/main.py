@@ -184,13 +184,37 @@ def connect_wifi():
 
 # ── Send ────────────────────────────────────────────────────────────────────
 
+# ── The typed journal ──────────────────────────────────────────────────────
+# One stream, every entry naming its own kind, so the soul can tell its own
+# acts from the body's reports. LOG:/REFLECTION:/CRASH: are written here;
+# UPDATE:/NO UPDATE:/FAILED REFLECTION:/OPERATOR: are written by the spine.
+_MARKERS = ("LOG:", "REFLECTION:", "CRASH:", "UPDATE:", "NO UPDATE:",
+            "FAILED REFLECTION:", "OPERATOR:", "BOOT:", "MEM:", "IV:")
+
+
+def _typed(msg):
+    """Tag an entry LOG: unless it already declares its type."""
+    msg = str(msg)
+    for m in _MARKERS:
+        if msg.startswith(m):
+            return msg
+    return "LOG: " + msg
+
+
 def send(msg):
     """Send a string to the spine. Available to instinct code."""
     try:
         if ws:
-            ws.send(str(msg))
+            ws.send(_typed(msg))
     except Exception as e:
         print("send: error:", e)
+
+
+def reflect(reason):
+    """Ask the soul to think, and say WHY. Journalling never does this —
+    send() only writes to the record; this is the one call that summons a
+    reflection. Say what changed or what you cannot resolve."""
+    send("REFLECTION: " + str(reason))
 
 
 # ── Instinct management ────────────────────────────────────────────────────
@@ -201,6 +225,7 @@ ws = None
 # The exec environment for instinct code
 INSTINCT_ENV = {
     "send": send,
+    "reflect": reflect,
     "asyncio": asyncio,
     "Pin": Pin,
     "I2C": I2C,

@@ -70,6 +70,12 @@ class VirtualScheduler:
                 self._running -= 1
                 if self._live <= 0:
                     self._has_tasks.clear()
+                    # Wake the driver so it re-checks and exits. Without this,
+                    # a task that dies BEFORE its first await (a TypeError on
+                    # the instinct's first line, say) never sets _settled —
+                    # drive() then waits on it forever and the whole run hangs
+                    # instead of reporting the crash.
+                    self._settled.set()
                 self._check_settled()
         t = asyncio.ensure_future(_wrapped())
         self._tasks.append(t)

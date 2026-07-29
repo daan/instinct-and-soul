@@ -1,8 +1,13 @@
 async def run():
+    # send() writes to the record; it does not summon the soul. reflect()
+    # does, and costs a reflection — so it is called when the world changes
+    # state, not on the sampling cadence.
     motor = PWM(Pin(1), freq=5000, duty=0)
 
     WINDOW = 30
+    STILL_VAR = 0.0005      # below this the body is not being moved
     bx, by, bz = [], [], []
+    moving = None
 
     while True:
         ax, ay, az = Imu.getAccel()
@@ -23,8 +28,15 @@ async def run():
             vz = sum((v - mz) ** 2 for v in bz) / WINDOW
             light = Als.getLightSensorData()
             prox = Als.getProximitySensorData()
+            var = vx + vy + vz
             send("accel x={:.4f} y={:.4f} z={:.4f} var={:.6f} light={} prox={}".format(
-                mx, my, mz, vx + vy + vz, light, prox))
+                mx, my, mz, var, light, prox))
+            now_moving = var > STILL_VAR
+            if moving is not None and now_moving != moving:
+                reflect("the body {} being moved (var={:.6f}, light={}, "
+                        "prox={})".format("started" if now_moving else "stopped",
+                                          var, light, prox))
+            moving = now_moving
             bx.clear()
             by.clear()
             bz.clear()

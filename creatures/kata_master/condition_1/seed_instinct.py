@@ -146,6 +146,14 @@ async def run():
                  "phase {} | state {} alone {:.0f}s | fluency {:.2f}".format(
                      span, gstats, n_set, tstats, overruns, Kata.phase(),
                      Handling.state(), Handling.alone_s(), Motion.fluency()))
+            # send() only writes to the record; reflect() is what summons the
+            # soul, and it costs. A closed window is the smallest span where
+            # the shape of the practice is visible rather than a single gust
+            # — that reading is the soul's work, not a reflex's.
+            reflect("window closed after {:.0f}s: {}, {} from the set, {}, "
+                    "{} overruns, fluency {:.2f}, phase {}".format(
+                        span, gstats, n_set, tstats, overruns,
+                        Motion.fluency(), Kata.phase()))
             win_start = now
             gusts = []
             offs = {}

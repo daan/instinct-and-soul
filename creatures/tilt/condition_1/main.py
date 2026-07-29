@@ -307,8 +307,25 @@ _wake_now = None        # asyncio.Event, created in main
 instinct_version = 0    # spine's version of the instinct we run (0 = seed)
 
 
-def send(msg, urgent=False):
+# ── The typed journal ──────────────────────────────────────────────────────
+# One stream, every entry naming its own kind, so the soul can tell its own
+# acts from the body's reports. LOG:/REFLECTION:/CRASH: are written here;
+# UPDATE:/NO UPDATE:/FAILED REFLECTION:/OPERATOR: are written by the spine.
+_MARKERS = ("LOG:", "REFLECTION:", "CRASH:", "UPDATE:", "NO UPDATE:",
+            "FAILED REFLECTION:", "OPERATOR:", "BOOT:", "MEM:", "IV:")
+
+
+def _typed(msg):
+    """Tag an entry LOG: unless it already declares its type."""
     msg = str(msg)
+    for m in _MARKERS:
+        if msg.startswith(m):
+            return msg
+    return "LOG: " + msg
+
+
+def send(msg, urgent=False):
+    msg = _typed(msg)
     JOURNAL.append((time.ticks_ms(), msg))
     if len(JOURNAL) > JOURNAL_MAX:
         del JOURNAL[:JOURNAL_MAX // 4]
@@ -316,14 +333,31 @@ def send(msg, urgent=False):
         try:
             if ws:
                 ws.send(msg)
+                # Delivered — drop it, so JOURNAL holds only UNSYNCED lines
+                # (what its docstring above always claimed). Without this the
+                # whole session accumulates here and _flush_journal replays
+                # every already-delivered line on the next reconnect, which
+                # now also re-fires REFLECTION: requests the soul has already
+                # answered.
+                JOURNAL.pop()
         except Exception as e:
             print("send: error:", e)
     # a crash is always urgent: the soul should hear about it soon
     if (urgent or msg.startswith("CRASH:")) and _wake_now is not None:
         _wake_now.set()
 
+def reflect(reason):
+    """Ask the soul to think, and say WHY. Journalling never does this —
+    send() only writes to the record; this is the one call that summons a
+    reflection. On a sleeping body it also wakes the radio."""
+    send("REFLECTION: " + str(reason))
+    if _wake_now is not None:
+        _wake_now.set()
+
+
 INSTINCT_ENV = {
     "send": send,
+    "reflect": reflect,
     "asyncio": asyncio,
     "time": time,
     "struct": struct,

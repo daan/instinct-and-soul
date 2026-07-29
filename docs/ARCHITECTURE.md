@@ -16,8 +16,23 @@ Rule: the record is always authoritative; live views never are.
 
 ## 2 · The reflection loop
 Journal up, code down. Slow, reliable, small. Artifacts: journal + trigger
-semantics (rhythm / warrant / crash), the reflection store, experience
+semantics (request / crash / operator), the reflection store, experience
 lineage.
+
+**Journalling is not asking** (2026-07-28). `send()` writes to the record
+and summons nobody; `reflect(reason)` is the only call that triggers a
+reflection, and it must say why. Rhythm is gone as a live trigger on the
+device spine — a creature that never asks never thinks. The simulator keeps
+its own cadence (`journal_triggers=True`) so `sim_creatures/` still run.
+
+The journal is ONE TYPED STREAM. The body writes `LOG:`, `REFLECTION:`,
+`CRASH:`; the spine writes `UPDATE:` (a deploy landed, carrying the soul's
+intent), `NO UPDATE:`, `FAILED REFLECTION:`, `OPERATOR:`. Because `UPDATE:`
+is written into the buffer *after* a deploy, it is the first entry of the
+next window: the soul opens each reflection reading its own last change,
+then what followed. This replaces the synthetic version-provenance markers
+and fixes the old failure where the soul could not tell a change that did
+nothing from a change that never arrived.
 
 ## 3 · The live window (development only)
 A view into what the body feels that the person cannot hear or feel — the

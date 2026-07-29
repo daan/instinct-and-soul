@@ -72,6 +72,10 @@ class _PostureState:
         self.rot_ema = 0.0
         self.last_t = None
         self.ref = None             # captured upright, unit vector
+        self.ref_lean = None        # (fwd, side) at capture: the ZERO that
+                                    # lean_ref()/flavor() measure from, so a
+                                    # neck mount's natural forward offset
+                                    # stops reading as a permanent lean
         self.still_since = None
         self.angle_ = None
         self._probe_t = -1e9
@@ -170,7 +174,7 @@ class _PostureState:
         if was_away:
             verb = ["MOVED_OFF", "{:.0f}min".format(max(1, round(dur / 60)))]
         elif delta is not None and delta > SHIFT_DEG:
-            verb = ["SHIFT", _flavor(self.grav)]
+            verb = ["SHIFT", _flavor(self.grav, self.ref_lean)]
         elif self.ep_peak_exc > STRETCH_DEG:
             verb = ["FULL_STRETCH", None]
         else:
@@ -188,18 +192,34 @@ class _PostureState:
         if n < 0.5:
             return False
         self.ref = (gx / n, gy / n, gz / n)
+        self.ref_lean = _lean_deg(self.grav)
         self.angle_ = 0.0
         _tap("upright_set")
         return True
 
 
-def _flavor(grav):
-    """A coarse, hedged word for where gravity sits — descriptive, never a
-    verdict. From the mounting frame (up = X-)."""
+def _lean_deg(grav, zero=None):
+    """(fwd, side) in degrees from the mounting frame (up = X-): forward is
+    positive, back negative. With `zero` (the lean captured by
+    set_upright()), the reading is re-referenced to how the wearer said they
+    wanted to sit — without it, to how the device happens to be strapped on."""
     if grav is None:
-        return "unknown"
+        return None
     fwd = math.degrees(math.atan2(grav[2], -grav[0]))
     side = math.degrees(math.atan2(grav[1], -grav[0]))
+    if zero is not None:
+        fwd -= zero[0]
+        side -= zero[1]
+    return (fwd, side)
+
+
+def _flavor(grav, zero=None):
+    """A coarse, hedged word for where gravity sits — descriptive, never a
+    verdict. Purely directional: no pole is named as the good one."""
+    lean = _lean_deg(grav, zero)
+    if lean is None:
+        return "unknown"
+    fwd, side = lean
     if abs(fwd) <= FLAVOR_UP_DEG and abs(side) <= FLAVOR_UP_DEG:
         return "level-ish"
     if abs(side) > abs(fwd):
@@ -221,6 +241,7 @@ class _TapState:
         self.last_tap_t = -1e9
         self.burst_n = 0
         self.burst_flag = None
+        self.tap_flag = False   # one-shot, set the instant a tap lands
         self.last_ = None
         self.total = 0
         self.peak_dev = 0.0     # rolling peak since last peak() read
@@ -233,6 +254,7 @@ class _TapState:
             self.last_tap_t = now_s
             self.burst_n += 1
             self.total += 1
+            self.tap_flag = True
             _tap("tap", g=round(dev, 2), n=self.burst_n)
         if self.burst_n and now_s - self.last_tap_t > TAP_BURST_GAP_S:
             self.burst_flag = [int(now_s * 1000), self.burst_n]
@@ -282,12 +304,31 @@ class _Posture:
         _posture.verb_flag = None
         return f
 
+    def rot(self):
+        """How fast the body is turning right now: the smoothed magnitude
+        of the gyro in deg/s (~1 s average). This is the RAW stillness
+        signal — still_s() is nothing but this number compared against
+        STILL_DPS. Read rot() when you want the measurement rather than
+        the verdict; worn and settled it sits at a few dps."""
+        return round(_posture.rot_ema, 1)
+
     def flavor(self):
         """The current lean as a hedged word: level-ish / forward-ish /
         backward-ish / sideways-ish. Purely directional — where gravity
         sat, with no pole named as the good one. Descriptive, never a
-        verdict."""
-        return _flavor(_posture.grav)
+        verdict. Available if you want it; nothing obliges you to speak
+        in these words."""
+        return _flavor(_posture.grav, _posture.ref_lean)
+
+    def lean_ref(self):
+        """(fwd_deg, side_deg) measured from the CAPTURED upright: 0,0 is
+        'the way they said they wanted to sit'. Forward is positive, back
+        negative; side is the lateral lean. Before set_upright() this falls
+        back to lean() — i.e. to the strap's own angle, which on a neck
+        mount is several degrees forward of true vertical. This, not
+        lean(), is the number to journal."""
+        lean = _lean_deg(_posture.grav, _posture.ref_lean)
+        return None if lean is None else (round(lean[0], 1), round(lean[1], 1))
 
     def lean(self):
         """(fwd_deg, side_deg), anatomical: 0 = standing upright; bending
@@ -314,6 +355,14 @@ class _Posture:
 
 class _Tap:
     """Explicit feedback from the wearer: taps on the housing."""
+
+    def tapped(self):
+        """True once per tap, the moment it lands — no grouping, no
+        counting, no waiting to see whether a second one follows. The
+        single explicit channel. Consumed on read."""
+        f = _taps.tap_flag
+        _taps.tap_flag = False
+        return f
 
     def burst(self):
         """[t_ms, count] once, ~0.5 s after a tap group ends — x1 a knock,

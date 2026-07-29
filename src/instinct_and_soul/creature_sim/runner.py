@@ -39,6 +39,10 @@ def _build_scope(*, send, aio, imu, speaker, synth, mem, m5):
         "__name__":   "__instinct__",
         "__builtins__": __builtins__,
         "send":       send,
+        # No soul in this harness — reflect() is a request to think and there
+        # is nobody to think. Journal the reason so the run still records
+        # WHEN the creature wanted to reflect, and carry on.
+        "reflect":    lambda reason: send("REFLECTION: {}".format(reason)),
         "asyncio":    aio,
         "time":       time,
         "math":       math,
@@ -58,7 +62,7 @@ def _build_scope(*, send, aio, imu, speaker, synth, mem, m5):
 # or fails with ModuleNotFoundError (Imu/Synth/Mem/Calc/M5). Replace any such
 # import with a no-op (line numbers preserved) so the injected object is used.
 _INJECTED_NAMES = ("asyncio", "uasyncio", "M5", "Imu", "Synth", "Speaker",
-                   "Mem", "Calc", "math", "time", "struct")
+                   "Mem", "Calc", "math", "time", "struct", "reflect")
 
 
 def _neutralize_injected_imports(code: str, extra: tuple = ()) -> str:
@@ -112,7 +116,11 @@ def run_sim(
     sent_path = os.path.join(output_dir, "comms", "sent.jsonl")
     sent_log = open(sent_path, "w")
 
-    def captured_send(msg):
+    def captured_send(msg, urgent=False):
+        # `urgent` is accepted and ignored: the device runtime and sim_spine
+        # both take it, and a seed written for either must not blow up here.
+        # (It used to TypeError on the instinct's first line — before any
+        # await — which hung the run instead of reporting a crash.)
         sent_log.write(json.dumps({"t": clock.now_ms, "content": str(msg)}) + "\n")
 
     sched = VirtualScheduler(clock, duration_ms)

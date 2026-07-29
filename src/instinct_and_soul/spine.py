@@ -19,7 +19,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Input, RichLog, Static
 
 from .llm import load_llm
-from .reflection import Creature, ReflectionLoop
+from .reflection import REFLECT_PREFIX, Creature, ReflectionLoop
 
 PORT = 8765
 HEARTBEAT_TIMEOUT = 12   # default; a BOOT announcing keepalive=N stretches it
@@ -92,6 +92,8 @@ class SpineApp(App):
             on_instinct_deploy=self._loop_deploy,
             on_status_change=self.update_status,
             max_reflections=max_reflections,
+            # The device spine's defining rule: journalling is not asking.
+            journal_triggers=False,
         )
 
     # ── Textual lifecycle ─────────────────────────────────────────────
@@ -282,9 +284,13 @@ class SpineApp(App):
                         device_iv = int(tok[3:])
                     except ValueError:
                         pass
-        if self.device_batch:
-            # the animal gets the hour: laptop clock + tz, one message.
-            # Gated on the batch announce — legacy runtimes would exec it.
+        # The animal gets the hour: laptop clock + tz, one message. Gated on
+        # the runtime advertising a mode= token, which is exactly the family
+        # that parses TIME: explicitly — older runtimes have no handler and
+        # would exec the message as instinct code. This used to be gated on
+        # `device_batch`, which silently denied the clock to the same runtime
+        # running live, leaving it with boot-relative time only.
+        if isinstance(first, str) and "mode=" in first:
             lt = time.localtime()
             gmtoff = getattr(lt, "tm_gmtoff", 0) or 0
             await ws.send("TIME:{}:{}".format(int(time.time()), gmtoff))
@@ -317,7 +323,12 @@ class SpineApp(App):
                     else:
                         self.log_msg("{} {}".format(stamp, text), style="dim")
                         self.loop.add_message(text)
-                    # no per-line reflect: FLUSH-END decides, once
+                        # A replayed request registers the trigger but does
+                        # NOT schedule here: the batch handshake is driven by
+                        # FLUSH-END, which reflects once and then NAPs.
+                        if text.startswith(REFLECT_PREFIX):
+                            self.loop.add_reflect_request(
+                                text[len(REFLECT_PREFIX):].strip())
                 elif msg.startswith("CRASH:"):
                     self.log_msg(msg, style="bold red")
                     self.loop.add_crash(msg)
@@ -325,10 +336,16 @@ class SpineApp(App):
                 elif msg.startswith("MEM:"):
                     self.loop.add_memory_snapshot(msg[4:])
                 else:
-                    self.log_msg(msg)
                     self.loop.add_message(msg)
-                    if not self.device_batch:
+                    # THE trigger. Journal traffic alone no longer reflects —
+                    # the creature has to ask, and say why.
+                    if msg.startswith(REFLECT_PREFIX):
+                        reason = msg[len(REFLECT_PREFIX):].strip()
+                        self.log_msg(msg, style="bold yellow")
+                        self.loop.add_reflect_request(reason)
                         self._schedule_reflect()
+                    else:
+                        self.log_msg(msg)
         except asyncio.CancelledError:
             pass
         except Exception:

@@ -23,6 +23,24 @@ from .llm import LLM_HARD_TIMEOUT_S, LLM_MAX_TOKENS, compute_cost
 from .message_buffer import MessageBuffer
 
 
+# ── Journal entry types ───────────────────────────────────────────────────
+# The journal is ONE typed stream: every entry names its own kind, so the
+# soul can tell its own acts from the body's reports, and can see exactly
+# where its last change landed in the sequence.
+#
+#   LOG:                the body's ordinary reporting        (device)
+#   REFLECTION:         a request to think, with its reason  (device)
+#   CRASH:              the instinct died                    (device)
+#   UPDATE:             a deploy landed, + the intent        (spine)
+#   NO UPDATE:          the soul thought and changed nothing (spine)
+#   FAILED REFLECTION:  the LLM errored or timed out         (spine)
+#   OPERATOR:           a person typed at the creature       (spine)
+#
+# The device side hardcodes its own prefixes (MicroPython cannot import
+# this module); keep the two in step.
+REFLECT_PREFIX = "REFLECTION:"
+
+
 def _is_truncated(stop_reason) -> bool:
     """True if the provider cut the reply at the token cap (anthropic
     'max_tokens', openai 'length', gemini 'MAX_TOKENS')."""
@@ -40,7 +58,7 @@ class Creature:
     def __init__(self, path):
         self.path = os.path.normpath(path)
         self.name = os.path.basename(self.path)
-        self.system_prompt = self._read("system_prompt.md")
+        self.embodiment = self._read("embodiment.md")
         self.character = self._read("character.md").strip()
         self.seed_experience = self._read("seed_experience.md")
         self.seed_instinct = self._read("seed_instinct.py")
@@ -183,7 +201,7 @@ class VersionStore:
     def save_seeds(self, creature):
         for name, content in (
             ("character.md", creature.character),
-            ("system_prompt.md", creature.system_prompt),
+            ("embodiment.md", creature.embodiment),
             ("seed_experience.md", creature.seed_experience),
             ("seed_instinct.py", creature.seed_instinct),
         ):
@@ -270,9 +288,15 @@ class ReflectionLoop:
                  on_instinct_deploy: Optional[DeployCb] = None,
                  on_status_change: Optional[StatusCb] = None,
                  max_reflections: Optional[int] = None,
+                 journal_triggers: bool = True,
                  now: Callable[[], float] = time.time):
         self.creature = creature
         self.llm = llm
+        # Does journal traffic alone summon the soul? The device spine says
+        # NO — the instinct must ask, with a reason (see REFLECT_PREFIX). The
+        # simulator says YES, keeping its own rhythm/warrant cadence, so the
+        # sim_creatures/ seeds that never call reflect() still run.
+        self.journal_triggers = journal_triggers
         # Hard cap on the number of LLM reflections (cost ceiling for pricey
         # models). None = unbounded. Once hit, needs_reflection() returns False
         # and the body keeps performing with the last instinct (no more LLM
@@ -318,6 +342,9 @@ class ReflectionLoop:
         self.last_crashed = False
         self.last_crash_msg = ""
         self._reflecting = False
+        # Pending triggers. Journal traffic is deliberately NOT one of them.
+        self._reflect_requests: list[str] = []
+        self._operator_pending = False
         self.session_usage = {
             "llm": self.llm_info,
             "started_at": time.time(),
@@ -331,7 +358,7 @@ class ReflectionLoop:
         }
 
         self.store.save_session_config(
-            creature.system_prompt, creature.character,
+            creature.embodiment, creature.character,
             self.llm_info, self.resumed_from, provenance=provenance,
         )
         self.store.save_seeds(creature)
@@ -374,20 +401,47 @@ class ReflectionLoop:
         tagged = "OPERATOR: " + text
         self.store.save_operator_command(text)
         self.buffer.add({"ts": self._now(), "content": tagged})
+        # A person typing at the creature is a deliberate act — it triggers a
+        # reflection even though ordinary journal traffic no longer does.
+        self._operator_pending = True
+
+    def _journal(self, content: str) -> None:
+        """Write a spine-authored entry into the creature's own journal, so
+        the soul's actions appear in the stream alongside the body's."""
+        self.buffer.add({"ts": self._now(), "content": content,
+                         "v": self.instinct_version})
+
+    def add_reflect_request(self, reason: str) -> None:
+        """The instinct asked to think, and said why. THE trigger: journal
+        lines accumulate silently until one of these arrives."""
+        reason = str(reason).strip()
+        self._reflect_requests.append(reason)
 
     def add_crash(self, error_msg: str) -> None:
         self.last_crashed = True
         self.last_crash_msg = error_msg
         self.store.save_crash(self.store.next_version("crash"), error_msg)
+        # A crash belongs in the stream too, so it has a POSITION relative to
+        # the lines around it — <crashed> alone says it happened, not when.
+        self.buffer.add({"ts": self._now(), "content": error_msg,
+                         "v": self.instinct_version})
 
     def add_memory_snapshot(self, payload: str) -> None:
         self.store.save_memory(self.store.next_version("memory"), payload)
 
     def needs_reflection(self) -> bool:
+        """Journalling does NOT cause a reflection. Three things do: the
+        instinct asking (with a reason), a crash, and the operator typing.
+        Buffered lines are still delivered in full when one of those fires —
+        they just no longer summon the soul on their own."""
         if (self.max_reflections is not None
                 and self.session_usage["reflections"] >= self.max_reflections):
             return False
-        return not self._reflecting and (self.buffer.has_pending() or self.last_crashed)
+        if self._reflecting:
+            return False
+        if self._reflect_requests or self.last_crashed or self._operator_pending:
+            return True
+        return self.journal_triggers and self.buffer.has_pending()
 
     # ── Reflection cycle ──────────────────────────────────────────────
 
@@ -401,23 +455,24 @@ class ReflectionLoop:
         crash_msg = self.last_crash_msg
         self.last_crashed = False
         self.last_crash_msg = ""
+        # What woke the soul, and why. Drained here so a request arriving
+        # DURING this reflection stays pending and fires the next round.
+        reasons = list(self._reflect_requests)
+        self._reflect_requests = []
+        operator = self._operator_pending
+        self._operator_pending = False
+        trigger = ("crash" if crashed else
+                   "request" if reasons else
+                   "operator" if operator else "unknown")
 
-        # Render with provenance: entries written by a previous instinct are
-        # marked, so the soul never mistakes the old code's reports for the
-        # new code's behavior — the fix that used to be done by dropping them.
-        lines = []
-        prev_v = None
-        for i, m in enumerate(messages):
-            v = m.get("v")
-            if v is not None and (i == 0 or v != prev_v):
-                if v != self.instinct_version:
-                    lines.append("  -- entries below were written by instinct "
-                                 "v{} (before your latest deploy) --".format(v))
-                elif i > 0:
-                    lines.append("  -- your current instinct v{} from here "
-                                 "on --".format(v))
-            prev_v = v
-            lines.append("  [{ts}] {content}".format(ts=m["ts"], content=m["content"]))
+        # The stream is self-describing: every entry carries its own type
+        # marker (LOG:/REFLECTION:/UPDATE:/CRASH:/OPERATOR:), and the
+        # UPDATE: written at the end of the previous reflection sits at the
+        # head of this window — so the soul reads its own last change first,
+        # then what followed it. No synthetic provenance annotations: the
+        # authoring version rides along as data on each entry instead.
+        lines = ["  [{ts}] {content}".format(ts=m["ts"], content=m["content"])
+                 for m in messages]
         messages_xml = "\n".join(lines)
         crashed_xml = "true\n{}".format(crash_msg) if crashed else "false"
 
@@ -444,7 +499,7 @@ class ReflectionLoop:
             # freezing the creature forever mid-reflection.
             _gen_t0 = time.monotonic()
             result = await asyncio.wait_for(
-                self.llm.call(self.creature.system_prompt, reflection_prompt),
+                self.llm.call(self.creature.embodiment, reflection_prompt),
                 timeout=LLM_HARD_TIMEOUT_S)
             gen_seconds = round(time.monotonic() - _gen_t0, 3)  # wall-clock generation time
             reply = result["text"]
@@ -483,7 +538,12 @@ class ReflectionLoop:
             new_instinct = extract_xml_tag(reply, "instinct")
 
             if not intent:
+                # Not a silent abort any more: the window goes back so it is
+                # not lost, and the creature's journal records that it asked,
+                # the soul answered, and nothing came of it.
                 self._on_log("soul: no intent in response", "bold red")
+                self.buffer.put_back(messages)
+                self._journal("NO UPDATE: (blank)")
                 return
 
             self._on_log("intent: {}".format(intent), "bold magenta")
@@ -503,6 +563,8 @@ class ReflectionLoop:
                 "messages_since_last": messages,
                 "instinct_version_in": self.instinct_version,
                 "crashed": crashed,
+                "trigger": trigger,
+                "reflect_reasons": reasons,
                 "intent": intent,
                 "stop_reason": stop_reason,
                 "truncated": truncated,
@@ -526,10 +588,14 @@ class ReflectionLoop:
                     except Exception as e:
                         self._on_log("instinct deploy callback raised: {}".format(e), "bold red")
 
-                # Journal principle: entries written during the reflection are
-                # never dropped — they carry their authoring version ("v") and
-                # the prompt marks them, so the next reflection can attribute
-                # them to the old code without losing the world-facts in them.
+            # The soul's own act, entered in the creature's journal. Written
+            # AFTER the deploy so instinct_version is the new one, and so it
+            # lands at the head of the next window: the soul opens its next
+            # reflection reading what it just changed, then what followed.
+            # Without this it cannot tell a change that did nothing from a
+            # change that never arrived.
+            self._journal("{}: {}".format(
+                "UPDATE" if new_instinct is not None else "NO UPDATE", intent))
 
             if new_experience is not None:
                 self.current_experience = new_experience
@@ -558,10 +624,17 @@ class ReflectionLoop:
                 "messages_since_last": messages,
                 "instinct_version_in": self.instinct_version,
                 "crashed": crashed,
+                "trigger": trigger,
+                "reflect_reasons": reasons,
                 "prompt": reflection_prompt,
                 "error": error_msg,
                 "failed": True,
             })
             self._on_log("reflection error: {}".format(error_msg), "bold red")
+            # The window was drained before the call — give it back, or the
+            # creature silently loses everything it journalled since its last
+            # reflection, and tell it in its own journal that the ask failed.
+            self.buffer.put_back(messages)
+            self._journal("FAILED REFLECTION: {}".format(error_msg))
         finally:
             self._set_reflecting(False)
