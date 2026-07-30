@@ -144,6 +144,14 @@ directory, no sharing between conditions unless made explicit.
                                    never lets one imply another — see below.
                                    Ships condition_2's worn values and its
                                    promoted experience.
+    creatures/tilt/condition_4/    condition_3 plus what its first wearing
+                                   taught (2026-07-30): the upright zero is
+                                   GATED on the mounting check, so a reboot
+                                   on a desk can no longer poison every lean;
+                                   HINT_AFTER_S measured down to 150s (at 240
+                                   the chirp was structurally mute — 0 of 162
+                                   stretches reached it); DISPLAY_MODE off;
+                                   and the 20x heartbeat bug fixed.
     creatures/tilt/training/       condition_1 with the instinct TEMPO
                                    (FROZEN_AFTER_S, CALL_EVERY_S, OUTCOME_S,
                                    HUSH_WINDOW_S, HUSH_GRACE_S) hoisted into
@@ -260,8 +268,8 @@ The callback now tries **`WAS_PRESSED` before `WAS_CLICKED`**, so the doc's
 "the moment it lands" is literally true — `WAS_CLICKED` waits for the button
 to come back up. The BOOT line reports which edge is live as
 `btn=cb:WAS_PRESSED | cb:WAS_CLICKED | poll:wasPressed | poll:wasClicked |
-none`. **None of this has run on hardware yet** — the tuner's `button` recipe
-is what confirms it, and that token is the first thing to read. Detection lives in `main.py`
+none`. **Confirmed working on hardware 2026-07-30** via the tuner's `button`
+recipe, on the first flash of this arm: every press lands exactly once. Detection lives in `main.py`
 deliberately: a callback registered by an instinct would outlive it, since
 `swap_instinct` unregisters nothing and every rewrite would leak another
 handler over a dead scope. Sampling is bounded by `M5.update()` at 20 Hz

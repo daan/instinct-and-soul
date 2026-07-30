@@ -2,7 +2,7 @@ async def run():
     # TILT — the organ measures, I interpret.
     #
     # This instinct does not name what the body did. It writes numbers —
-    # minutes held still, degrees of lean from the captured upright, how
+    # minutes held still, degrees of lean from the upright zero, how
     # long a movement ran, how hard it peaked and how far it turned — plus
     # the few things that actually happened (a press, a chirp), and a
     # running ledger so reflection can reason about the whole wearing
@@ -17,10 +17,10 @@ async def run():
     # has actually changed or when I cannot resolve something from here,
     # not on a timer. The one below is my first guess about what deserves
     # it.
-    IGNORED_BEFORE_ASK = 3   # chirps in a row that nothing followed — no
+    IGNORED_BEFORE_ASK = 3   # chirps in a row that nothing followed; no
                              # movement, no press: my voice or my timing
                              # is wrong and I cannot tell which from
-                             # inside a reflex
+                             # inside a reflex. Guessed, untested 
 
     # ── tempo (mine to retune) ────────────────────────────────────────────
     HINT_AFTER_S = 150.0     # first hint once stillness has run this long.
@@ -47,7 +47,8 @@ async def run():
     HUSH_WINDOW_S = 15.0     # a press this soon after a hint means "quiet" —
                              # generous on purpose: they still have to reach
                              # up and find the button, which takes a moment
-    HUSH_GRACE_S = 1800.0    # hushed: silent this long, no grudge after
+    HUSH_GRACE_S = 1800.0    # (guessed, never yet tested) no hush has 
+                             # ever landed on a real back
     SAMPLE_EVERY_S = 300.0   # a plain state line this often. (30 is the
                              # BENCH value, so a human watching the journal
                              # can see the body is alive. Worn at 30 s a day
@@ -60,16 +61,13 @@ async def run():
                              # The ledger keeps EXTREMES, not counts: a
                              # count says how often the body moved and
                              # nothing about what any of the moving was.
-                             # What these movements WERE — a shiver, a
-                             # re-sit, a journey — is not settled here;
-                             # the numbers go to reflection and the words
-                             # are mine to find there.
+                             # What these movements WERE is not settled
+                             # here; the numbers go to reflection and
+                             # the words are mine to find there.
     MIN_STATE_S = 0.4        # a state must hold this long before I report
                              # the change, so a gyro hovering at the
                              # threshold cannot chatter. Short enough that a
-                             # re-sit or a shove of the chair still lands.
-    SETREF_STILL_S = 20.0    # hold still this long after boot -> capture
-                             # upright, the zero every lean is measured from
+                             # quick shove of the chair still lands.
     VOL = 60                 # one level (45 -> 59 -> 60 by ear on a real
                              # back, 2026-07-29). Escalation is mine to invent.
 
@@ -205,12 +203,6 @@ async def run():
         Posture.feed(Imu.getAccel(), Imu.getGyro())
         M5.update()                    # the voice; the body latches Button
         still = Posture.still_s()
-
-        # ── the zero: capture upright once they have settled ──────────────
-        if not Posture.has_ref() and still > SETREF_STILL_S:
-            if Posture.set_upright():
-                note("upright captured after {:.0f}s still — every lean "
-                     "below is measured from here".format(still))
 
         # ── accumulate, on the raw signal ─────────────────────────────────
         if still > 0:

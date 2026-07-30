@@ -10,7 +10,7 @@ instinct scope on every hot-swap — worn at the base of the neck, this body
 watches the wearer's spine the way a cricket watches its ground. The voice
 is the INTERNAL speaker only.
 
-Unlike the earlier tilt arms, condition_3's organ is FED BY THE INSTINCT:
+Unlike condition_1/training/condition_2, this organ is FED BY THE INSTINCT:
 Posture.feed(a, g) is an explicit call and `Imu` is handed over untouched.
 Nothing in this file reads the IMU, so an instinct that stops feeding stops
 sensing — see lib/organs.py for why that trade was made.

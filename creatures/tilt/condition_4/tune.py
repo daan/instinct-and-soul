@@ -1,5 +1,5 @@
 """
-tune.py — interactive tuner for the tilt condition_3 creature.
+tune.py — interactive tuner for the tilt condition_4 creature.
 
 This body is a PLAIN StickS3 — internal speaker and IMU, nothing attached.
 Two things to settle before anyone wears it for real: the CRICKET
@@ -7,11 +7,11 @@ vocabulary (trill / up / down — the test is whether you can ignore it) and
 the POSTURE read on a real back.
 
 Run:
-    tune creatures/tilt/condition_3
+    tune creatures/tilt/condition_4
 
 Posture / feedback:
     state                        what the SEED sees: still / lean-from-ref /
-                                 rot — the condition_3 calibration view
+                                 rot — the condition_4 calibration view
     posture                      live angle/stillness stream (worn)
     setref                       capture upright (sit the way you mean it)
     verbs                        movement-verb stream (MICRO_SHIFT / SHIFT /
@@ -69,7 +69,7 @@ TUNABLES = (
 )
 
 DEPLOY_SHORTCUTS = {
-    "baseline": "creatures/tilt/condition_3/seed_instinct.py",
+    "baseline": "creatures/tilt/condition_4/seed_instinct.py",
 }
 
 
@@ -79,7 +79,7 @@ def clamp(v, lo, hi):
 
 class TiltTuner(TuneAppBase):
     INITIAL_INSTINCT = INSTINCT_IDLE
-    STATUS_LABEL = "tilt-c3"
+    STATUS_LABEL = "tilt-c4"
 
     def __init__(self):
         super().__init__()
@@ -254,7 +254,7 @@ class TiltTuner(TuneAppBase):
         if msg.startswith("BOOT:"):
             # The device sends this announce on EVERY connect, so the prefix
             # says nothing about whether the board restarted. Labelling all of
-            # them "(RE)BOOTED" is precisely the confusion condition_3 exists
+            # them "(RE)BOOTED" is precisely the confusion the lifecycle work exists
             # to remove — decode `wake=` and say which lifecycle moved.
             body = msg[5:].strip()
             tok = {}

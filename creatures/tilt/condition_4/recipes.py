@@ -37,7 +37,7 @@ RECIPES = {
         "args": [],
         "code": """
 async def run():
-    # The condition_3 calibration view: exactly the three numbers the seed
+    # The calibration view: exactly the three numbers the seed
     # journals. Sit, fidget, walk, press. Watch that (a) rot settles to a few
     # dps when you hold still, (b) lean reads ~0,0 after the capture below,
     # and (c) your presses land. STILL_DPS is the line between still and not.
