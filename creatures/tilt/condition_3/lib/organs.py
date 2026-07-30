@@ -21,8 +21,25 @@ Kata: the body owns the measurement, the mind owns the meaning.
 All constants are first guesses (2026-07-15) to calibrate with the tuner's
 `posture` stream, worn, on a real back.
 
-Fed by interposing on the instinct's own Imu reads; state survives instinct
-hot-swaps.
+FED BY THE INSTINCT (changed 2026-07-30, condition_3 only): Posture.feed(a, g)
+is an explicit call; Imu is handed over untouched. Earlier arms
+(condition_1/training/condition_2) interpose on the instinct's Imu reads — do
+not port this back to them, they are the baseline. Rationale and the cost
+(a forgeable still_s) are in _Posture's docstring.
+
+ONE SENSE ONLY (2026-07-30). The Tap organ is gone from this arm: worn on a
+back, walking clears TAP_G — one walk to the coffee machine produced four
+"taps" in a second, seventeen across a session, none of them meant. The
+explicit channel is the front BUTTON instead, latched in main.py, which
+footfalls cannot produce. Tap is not deprecated in the lineage, just wrong
+for this mounting; the working implementation (_TapState, TAP_G,
+TAP_REFRACT_S, TAP_BURST_GAP_S, burst grouping) is intact in
+creatures/tilt/condition_2/lib/organs.py if a shoulder or wrist creature
+wants it. It was removed rather than left in scope because a sense the
+embodiment does not document is a sense the soul can only stumble into.
+
+State survives instinct hot-swaps either way: the module is imported once and
+attach() only rebinds the read facades.
 """
 import math
 import time
@@ -58,12 +75,6 @@ FLAVOR_UP_DEG = 8.0  # |lean| within this of the mounting zero -> "level-ish"
 FLAVOR_FWD_DEG = 12.0  # UNUSED — _flavor() bands on FLAVOR_UP_DEG alone. Kept
                      # (and still in the tuner's TUNABLES) only so a `set` on
                      # it doesn't error; it has no effect on the flavor words.
-
-TAP_G = 1.2          # accel-magnitude deviation (g) that counts as a tap on
-                     # the housing — knuckle taps measure well above body
-                     # motion (guess; calibrate worn with the tuner's `tap`)
-TAP_REFRACT_S = 0.25 # one tap, one count
-TAP_BURST_GAP_S = 0.5  # taps closer than this group into one burst
 
 
 class _PostureState:
@@ -230,43 +241,34 @@ def _flavor(grav, zero=None):
 _posture = _PostureState()
 
 
-class _TapState:
-    """Explicit feedback: a tap on the housing is a sharp accel spike far
-    above anything posture or walking produces. Taps group into bursts
-    (x1, x2, x3...) so a deliberate double-tap is distinguishable from an
-    accidental knock. NOTE: spikes are short — read the Imu fast (<=20 ms)
-    when taps matter; a 50 ms poll can miss soft ones."""
-
-    def __init__(self):
-        self.last_tap_t = -1e9
-        self.burst_n = 0
-        self.burst_flag = None
-        self.tap_flag = False   # one-shot, set the instant a tap lands
-        self.last_ = None
-        self.total = 0
-        self.peak_dev = 0.0     # rolling peak since last peak() read
-
-    def feed(self, a, now_s):
-        dev = abs(math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]) - 1.0)
-        if dev > self.peak_dev:
-            self.peak_dev = dev
-        if dev > TAP_G and now_s - self.last_tap_t > TAP_REFRACT_S:
-            self.last_tap_t = now_s
-            self.burst_n += 1
-            self.total += 1
-            self.tap_flag = True
-            _tap("tap", g=round(dev, 2), n=self.burst_n)
-        if self.burst_n and now_s - self.last_tap_t > TAP_BURST_GAP_S:
-            self.burst_flag = [int(now_s * 1000), self.burst_n]
-            self.last_ = self.burst_flag
-            self.burst_n = 0
-
-
-_taps = _TapState()
 
 
 class _Posture:
-    """The tree's lean, and how long it has stood unmoved."""
+    """The tree's lean, and how long it has stood unmoved.
+
+    FED BY THE INSTINCT, deliberately (2026-07-30). This organ used to be fed
+    by interposing on Imu.getAccel()/getGyro() — a hidden side effect, which
+    cost ~20 lines of embodiment explaining an invisible contract and an
+    ordering rule (accel FIRST) that nothing enforced. feed(a, g) puts the
+    dependency on the page: argument order makes the pairing structural, and
+    a rewrite that stops feeding is a MISSING LINE rather than a missing side
+    effect — visible to the soul, which re-reads its own instinct in full at
+    every reflection.
+
+    Known cost, recorded honestly: this makes still_s() forgeable, and for
+    THIS character (restless when frozen) still_s is the satisfaction
+    percept — see ORGANS.md's unfeedability rule. Interposing did not
+    actually prevent that either (the instinct owned the clock, and pinning
+    the clock pins the number), but a body-owned loop would. That is the
+    open alternative; see the tilt README."""
+
+    def feed(self, accel, gyro):
+        """Advance the sense one step: accel (x,y,z in g) and gyro (x,y,z in
+        deg/s) READ AT THE SAME MOMENT. This is Posture's only clock — every
+        reading below moves when you call this and at no other time. The gap
+        between two calls is its dt, so call it steadily, every pass of your
+        loop (20-50 ms is right; beyond ~200 ms the smoothing mis-scales)."""
+        _posture.feed(accel, gyro, time.ticks_ms() / 1000.0)
 
     def angle(self):
         """Degrees away from the captured upright (live, ~1 s smoothed), or
@@ -353,64 +355,47 @@ class _Posture:
         return "XYZ"[i] + ("+" if g[i] > 0 else "-")
 
 
-class _Tap:
-    """Explicit feedback from the wearer: taps on the housing."""
+def _soul_calc(full):
+    """The narrowed Calc: the three tools that suit a back, and none of the
+    dance machinery.
 
-    def tapped(self):
-        """True once per tap, the moment it lands — no grouping, no
-        counting, no waiting to see whether a second one follows. The
-        single explicit channel. Consumed on read."""
-        f = _taps.tap_flag
-        _taps.tap_flag = False
-        return f
+    calc.py is shared with the dancers and drummers, where the task is rhythm
+    and world-frame motion. On a spine at posture timescales most of it is
+    either redundant or a false promise, and a tool in scope is an invitation
+    to use it — so this creature is handed less (the same move lala_revisited
+    makes when it withholds the Madgwick CLASS from its soul).
 
-    def burst(self):
-        """[t_ms, count] once, ~0.5 s after a tap group ends — x1 a knock,
-        x2+ deliberate. Consumed on read."""
-        f = _taps.burst_flag
-        _taps.burst_flag = None
-        return f
+    KEPT  Running  per-person baselines: this back's own quiet level, and
+                   z(x) for "is this unusual FOR THEM". The organ's
+                   STILL_DPS is one fixed guess for everyone; this is how
+                   the soul gets past it.
+          Onset    the same idea as an event detector — fires on
+                   mean + k*std with a refractory, so no threshold has to
+                   be hard-coded.
+          OneEuro  a smoother for numbers the SOUL derives (a response
+                   rate, minutes-still-per-hour). Gravity and rotation
+                   arrive smoothed already; this is not for them.
 
-    def last(self):
-        """The most recent burst, kept for reading."""
-        return _taps.last_
-
-    def total(self):
-        """Taps since the session started."""
-        return _taps.total
-
-    def peak(self):
-        """Peak accel deviation (g) since the last peak() read — the
-        calibration meter for TAP_G. Consumed on read."""
-        p = round(_taps.peak_dev, 2)
-        _taps.peak_dev = 0.0
-        return p
-
-
-class _PostureImu:
-    def __init__(self, real):
-        self._real = real
-        self._acc = (0.0, 0.0, 1.0)
-
-    def getAccel(self):
-        a = self._real.getAccel()
-        self._acc = a
-        _taps.feed(a, time.ticks_ms() / 1000.0)
-        return a
-
-    def getGyro(self):
-        g = self._real.getGyro()
-        _posture.feed(self._acc, g, time.ticks_ms() / 1000.0)
-        return g
-
-    def getMag(self):
-        return self._real.getMag()
+    DROPPED  Madgwick / Pose  full orientation needs a compass, and
+                   Imu.getMag() is (0,0,0) on this board — yaw would drift
+                   away unnoticed. It would also put a SECOND orientation
+                   filter beside _PostureState.grav.
+             Flow  world-frame velocity and reversals; needs Madgwick.
+             Periodicity / AlphaBeta  beat tracking, tuned to 0.3-1.2 s
+                   periods. Nothing this animal cares about happens at
+                   50-200 bpm.
+    """
+    class SoulCalc:
+        pass
+    SoulCalc.OneEuro = full.OneEuro
+    SoulCalc.Running = full.Running
+    SoulCalc.Onset = full.Onset
+    return SoulCalc
 
 
 def attach(scope):
-    imu = scope["Imu"]
-    if isinstance(imu, _PostureImu):
-        imu = imu._real
-    scope["Imu"] = _PostureImu(imu)
+    # Imu is left alone — the real hardware module, no side effects on read.
+    # The instinct feeds Posture itself; see _Posture.feed.
     scope["Posture"] = _Posture()
-    scope["Tap"] = _Tap()
+    if "Calc" in scope:
+        scope["Calc"] = _soul_calc(scope["Calc"])

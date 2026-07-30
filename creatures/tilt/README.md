@@ -238,6 +238,139 @@ board up 46m, instinct v2, creature NOT restarted` vs `sent instinct v3 —
 creature RESTARTED (board had v2)`. That spine change is shared, not
 condition-scoped, so condition_1 and training get it too.
 
+The explicit channel is also now the **button**, not the tap. Worn on a back,
+walking clears `TAP_G`: a single walk to the coffee machine produced four
+"taps" in one second and seventeen across a session, none deliberate. The
+runtime detects the click edge (driver callback where available, falling back
+to polling in `heartbeat()`) and latches it behind a `Button` module —
+`Button.pressed()` is True once per press and consumed on read;
+`Button.last_s()` is seconds since the last press, `None` if there has been
+none, and NOT consumed. It is a module rather than a loose `button()`
+function so every sense in scope is reached the same way; the ledger counts
+`presses`, not `taps`, for the same reason — the soul reads that word.
+
+A **flag, not a counter** (revised 2026-07-30): counting invited the reading
+that two presses mean something other than one, which nothing has shown. Two
+presses inside a single poll collapse to one `True`, which at the seed's 50 Hz
+needs them closer together than a hand manages; a rewrite that wants to tell a
+double from a single can time consecutive presses with `last_s()`. Dropping
+the count also dropped the arbitrary `_BTN_MAX = 8` queue cap it needed.
+
+The callback now tries **`WAS_PRESSED` before `WAS_CLICKED`**, so the doc's
+"the moment it lands" is literally true — `WAS_CLICKED` waits for the button
+to come back up. The BOOT line reports which edge is live as
+`btn=cb:WAS_PRESSED | cb:WAS_CLICKED | poll:wasPressed | poll:wasClicked |
+none`. **None of this has run on hardware yet** — the tuner's `button` recipe
+is what confirms it, and that token is the first thing to read. Detection lives in `main.py`
+deliberately: a callback registered by an instinct would outlive it, since
+`swap_instinct` unregisters nothing and every rewrite would leak another
+handler over a dead scope. Sampling is bounded by `M5.update()` at 20 Hz
+either way — the callback fixes double-reads and slow pollers, not the 50 ms
+window.
+
+**`Tap` is gone from this arm entirely** (2026-07-30), organ and tuner recipe
+both, rather than left in scope unused: a sense the embodiment does not
+document is a sense the soul can only stumble into. It is not deprecated in
+the lineage — walking on a *back* clears `TAP_G`, which says nothing about a
+wrist or a shoulder — and the working implementation (`_TapState`, burst
+grouping, the three `TAP_*` constants) is intact in
+`condition_2/lib/organs.py` for whoever wants it.
+
+### The organ is fed by the instinct (2026-07-30)
+
+condition_1/training/condition_2 feed Posture by **interposing**: `attach()`
+replaces `Imu` with a wrapper whose `getAccel()` secretly feeds `Tap` and whose
+`getGyro()` secretly feeds `Posture`, using the accel stashed by the previous
+call. It works, and it cost ~20 lines of embodiment describing an invisible
+contract, an ordering rule (accel FIRST) that nothing enforced, and four silent
+failure modes.
+
+condition_3 makes it explicit. `Imu` is handed over untouched; the instinct
+calls:
+
+    Posture.feed(Imu.getAccel(), Imu.getGyro())     # Posture's only clock
+
+Argument order makes the pairing structural — you cannot express the
+gyro-then-accel bug. And a rewrite that stops feeding is a **missing line**
+rather than a missing side effect, which matters here because the soul re-emits
+its whole instinct at every reflection, so it reads its own loop back.
+
+**The cost, recorded because it is real.** `still_s()` is now forgeable: a soul
+can feed synthetic stillness or synthetic motion. For *this* character
+("restless when they're frozen") stillness is the satisfaction percept, which
+`ORGANS.md`'s unfeedability rule says must derive from a stream the instinct
+cannot write — and `Pulse`'s entry records a predecessor that was feedable and
+got gamed twice.
+
+Interposing did not actually protect it either: `still_s()` returns
+`last_t - still_since`, both organ-internal, so an instinct that simply stops
+reading **freezes** the number. Reading only while the person moves pins it low
+and buys contentment all day, with no fake data anywhere — just by choosing
+when to look. Controlling the clock was always enough.
+
+**The open alternative**, if that forgeability turns out to matter: give the
+body a small loop of its own (~5 Hz is plenty for a *duration*) that owns
+`rot_ema`/`still_since` and nothing else, on the pattern of
+`sim_creatures/lala_revisited/organ/organs.py` — where `attach()` spawns one
+`asyncio` pump that outlives every hot-swap and the soul gets a view with no
+`update()`. That makes the percept genuinely unforgeable and removes the
+feeding contract entirely, at the price of two failure modes worth pricing
+first: a pump that dies takes the sense with it silently (fix: `try/except` +
+journal through `main.py`'s `CRASH:organs:` path), and a starved pump serves
+stale numbers that look fresh (fix: expose `age_s()`). A Madgwick would also
+become affordable there — a signed world-frame vector rather than a gravity
+low-pass — though on this board `getMag()` is `(0,0,0)`, so heading would drift
+unmeasured.
+
+### `Calc` narrowed to three tools (2026-07-30)
+
+`calc.py` ships to every board but was written for the dancers: across all
+device creatures, **0 of 226 soul-written instincts ever used it** (in the sim
+creatures, 1406 of 2408 did). Rather than document eight classes nobody
+reaches for, condition_3's `attach()` hands the instinct only `Running`,
+`Onset` and `OneEuro`, and the embodiment describes those properly — with
+`Running`/`Onset` framed as the way out of a fixed threshold, since every
+constant in the organ is one guess made for nobody. `Madgwick`/`Pose` (no
+compass on this board; would also mean a second orientation filter beside
+`_PostureState.grav`), `Flow`, `Periodicity` and `AlphaBeta` are removed —
+the same move `lala_revisited` makes when it withholds the Madgwick *class*
+from its soul. A tool in scope is an invitation to use it.
+
+### Bouts get a third dimension, and the roll-up loses its bucket (2026-07-30)
+
+The transition line carried duration and peak rate. Two dimensions separate
+the confound weakly: a shove of the chair is 5s/peak 30, a walk to the coffee
+machine is 61s/peak 73 — the same kind of event at two sizes. The line now
+also carries **turned**: `Posture.rot()` summed over the bout, in degrees, the
+energy of the whole thing rather than its loudest instant. Measured on
+synthetic bouts, that is 138° against 4474° — a 32x gap where duration and
+peak gave 10x. It is a number, so it names nothing.
+
+A fourth axis comes free: the lean the bout **started from** against the lean
+it **ended on**. A stretch returns to the same lean; a repositioning lands
+somewhere new. `lean +2,+0 -> +1,+0` versus `lean +0,+0 -> +19,+0`. That axis
+answers "did this movement go anywhere", which none of the other three can.
+
+Implementation note worth keeping: the "before" lean must be latched on the
+RAW still→moving edge, not at either edge of the `MIN_STATE_S` debounce. Read
+at the moving report and gravity (`GRAV_TAU_S = 1.0`) has already tracked
+0.4 s into the movement it is supposed to precede; read at the stillness
+report and it *is* the after-pose. Both were wrong in the first two attempts.
+
+**`BREAK_S` is gone**, and with it the `breaks`/`h_breaks` counters. `BREAK_S =
+8.0` declared what a "real departure" was before one had ever been measured —
+a word in disguise, and the only thing it fed was that count. The roll-up now
+carries a highlight reel instead: the three biggest bouts of the span by turn,
+`biggest moves 61s/2400°, 9s/210°, 8s/180°`. Extremes preserve the shape of
+the distribution without bucketing it, and buckets would be a grammar by the
+back door. `ANSWER_MIN_S` keeps its own floor — answering a chirp and leaving
+the chair were always two questions, and one threshold never served both.
+
+The reels live in the ledger (`big` for the wearing, `h_big` for the span,
+reset at roll-up). `flush()` stores a shallow `dict(led)`, so they are
+rebuilt with `[list(x) for x in ...]` on restore or the stored ledger and the
+working one would share the same list objects.
+
 Also in this arm: worn values restored (`HINT_AFTER_S` 240, `SAMPLE_EVERY_S`
 300) after condition_2's bench session, and `ANSWER_MIN_S = 1.0` — a floor on
 what counts as answering a chirp. The soul's own fix in condition_2 correctly

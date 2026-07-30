@@ -34,6 +34,18 @@ def _patch_time(clock: Clock):
     time.sleep_ms   = lambda n: clock.advance(float(n))  # synchronous legacy
 
 
+class _NoButton:
+    """Stand-in for the device's explicit channel: there is no hardware here
+    and nobody to press it, so it is never pressed. Mirrors the device API
+    (main.py's _Button) so a seed written for the board runs unchanged."""
+
+    def pressed(self):
+        return False
+
+    def last_s(self):
+        return None          # never pressed this wearing
+
+
 def _build_scope(*, send, aio, imu, speaker, synth, mem, m5):
     return {
         "__name__":   "__instinct__",
@@ -43,6 +55,13 @@ def _build_scope(*, send, aio, imu, speaker, synth, mem, m5):
         # is nobody to think. Journal the reason so the run still records
         # WHEN the creature wanted to reflect, and carry on.
         "reflect":    lambda reason: send("REFLECTION: {}".format(reason)),
+        # No hardware and nobody to press it — always zero clicks. Present so
+        # a seed written for the device runs here without a NameError.
+        "Button":     _NoButton(),
+        # The instinct's own version number, injected by the device runtime so a
+        # creature can tell a REWRITE from a re-push. This harness only ever
+        # runs the seed, and 0 is what the device calls the seed.
+        "IV":         0,
         "asyncio":    aio,
         "time":       time,
         "math":       math,
@@ -62,7 +81,7 @@ def _build_scope(*, send, aio, imu, speaker, synth, mem, m5):
 # or fails with ModuleNotFoundError (Imu/Synth/Mem/Calc/M5). Replace any such
 # import with a no-op (line numbers preserved) so the injected object is used.
 _INJECTED_NAMES = ("asyncio", "uasyncio", "M5", "Imu", "Synth", "Speaker",
-                   "Mem", "Calc", "math", "time", "struct", "reflect")
+                   "Mem", "Calc", "math", "time", "struct", "reflect", "Button")
 
 
 def _neutralize_injected_imports(code: str, extra: tuple = ()) -> str:

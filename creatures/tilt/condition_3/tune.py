@@ -16,7 +16,9 @@ Posture / feedback:
     setref                       capture upright (sit the way you mean it)
     verbs                        movement-verb stream (MICRO_SHIFT / SHIFT /
                                  FULL_STRETCH / MOVED_OFF) — tune the grammar
-    tap                          tap-detection test (bursts + calibration peaks)
+    button                       THE explicit channel: press BtnA, watch every
+                                 press land exactly once. The BOOT line names
+                                 the live edge: btn=cb:WAS_PRESSED | ...
 
 Organ calibration (the live bench — run `stetho` in a second terminal):
     stetho [ip] | stetho off     stream organ events/levels (rot_ema,
@@ -51,7 +53,7 @@ from recipes import RECIPES, INSTINCT_IDLE
 
 
 PLACEHOLDER = (
-    "state | posture | setref | verbs | tap | stetho [ip|off] | set <param> <val> "
+    "state | button | posture | setref | verbs | stetho [ip|off] | set <param> <val> "
     "| params | cricket [1-3] [vol] | lowbat [vol] "
     "| deploy baseline|<path> | vbat | power | imulog | off"
 )
@@ -63,7 +65,6 @@ TUNABLES = (
     "STILL_DPS", "GRAV_TAU_S",
     "EP_SETTLE_S", "SHIFT_DEG", "STRETCH_DEG", "AWAY_S",
     "FLAVOR_UP_DEG", "FLAVOR_FWD_DEG",
-    "TAP_G", "TAP_REFRACT_S", "TAP_BURST_GAP_S",
 )
 
 DEPLOY_SHORTCUTS = {
@@ -155,9 +156,10 @@ class TiltTuner(TuneAppBase):
                 code = format_recipe(RECIPES["verbs"])
                 self.log_msg("movement-verb stream — fidget, shift, stretch, walk", style="cyan")
 
-            elif cmd == "tap":
-                code = format_recipe(RECIPES["tap"])
-                self.log_msg("tap test — tap the stick, watch bursts + peaks", style="cyan")
+            elif cmd == "button":
+                code = format_recipe(RECIPES["button"])
+                self.log_msg("press BtnA — slowly, then fast. Each press "
+                             "should land exactly once", style="cyan")
 
             elif cmd == "stetho":
                 if len(parts) > 1 and parts[1].lower() == "off":

@@ -5,7 +5,8 @@ This body is a PLAIN StickS3 — internal speaker and IMU, nothing attached.
 The tuner's jobs before anyone wears it for real: find the CRICKET (a chirp
 subtle enough to be missable — five designs to audition, each looping so
 you can live with it a while) and calibrate the POSTURE read on a real back
-(capture upright, watch the angle while sitting well and slouching).
+(capture upright, watch the angle while sitting well and slouching) and
+confirm the BUTTON, which is the only channel the wearer controls.
 
 Each entry maps a recipe name to a spec:
   "args" — list of (arg_name, type, default) tuples used to fill {placeholders}
@@ -21,8 +22,7 @@ async def run():
     send("idle: tilt tuner")
     n = 0
     while True:
-        Imu.getAccel()
-        Imu.getGyro()
+        Posture.feed(Imu.getAccel(), Imu.getGyro())
         n += 1
         if n % 60 == 0:
             a = Posture.angle()
@@ -38,23 +38,20 @@ RECIPES = {
         "code": """
 async def run():
     # The condition_3 calibration view: exactly the three numbers the seed
-    # journals. Sit, fidget, walk, tap. Watch that (a) rot settles to a few
+    # journals. Sit, fidget, walk, press. Watch that (a) rot settles to a few
     # dps when you hold still, (b) lean reads ~0,0 after the capture below,
-    # and (c) your taps land. STILL_DPS is the line between still and not;
-    # TAP_G is the line between a tap and body motion.
+    # and (c) your presses land. STILL_DPS is the line between still and not.
     send("state: capturing upright in 3s — sit the way you mean it...")
     t0 = time.ticks_ms()
     while time.ticks_ms() - t0 < 3000:
-        Imu.getAccel()
-        Imu.getGyro()
+        Posture.feed(Imu.getAccel(), Imu.getGyro())
         await asyncio.sleep_ms(20)
     send("upright captured" if Posture.set_upright() else "capture FAILED")
     n = 0
     while True:
-        Imu.getAccel()
-        Imu.getGyro()
-        if Tap.tapped():
-            send("TAP")
+        Posture.feed(Imu.getAccel(), Imu.getGyro())
+        if Button.pressed():
+            send("PRESS")
         n += 1
         if n % 50 == 0:      # ~1 s at 50 Hz
             lr = Posture.lean_ref()
@@ -77,8 +74,7 @@ async def run():
              "toward, hold still, then run `setref`")
     warned = False
     while True:
-        Imu.getAccel()
-        Imu.getGyro()
+        Posture.feed(Imu.getAccel(), Imu.getGyro())
         a = Posture.angle()
         lean = Posture.lean()
         up = Posture.up_axis()
@@ -100,14 +96,12 @@ async def run():
     send("capturing upright in 3s — sit the way you mean it...")
     t0 = time.ticks_ms()
     while time.ticks_ms() - t0 < 3000:
-        Imu.getAccel()
-        Imu.getGyro()
+        Posture.feed(Imu.getAccel(), Imu.getGyro())
         await asyncio.sleep_ms(20)
     ok = Posture.set_upright()
     send("upright captured" if ok else "capture FAILED (no gravity read yet)")
     while True:
-        Imu.getAccel()
-        Imu.getGyro()
+        Posture.feed(Imu.getAccel(), Imu.getGyro())
         a = Posture.angle()
         send("angle={} deg | still={:.1f}s".format(
             a if a is not None else "no-ref", Posture.still_s()))
@@ -155,8 +149,7 @@ async def run():
     send("verbs: move and watch. fidget / lean / stretch / walk off...")
     n = 0
     while True:
-        Imu.getAccel()
-        Imu.getGyro()
+        Posture.feed(Imu.getAccel(), Imu.getGyro())
         v = Posture.verb()
         if v:
             send("{}({})".format(v[0], v[1]) if v[1] else v[0])
@@ -167,25 +160,34 @@ async def run():
         await asyncio.sleep_ms(20)
 """,
     },
-    "tap": {
+    "button": {
         "args": [],
         "code": """
 async def run():
-    # Tap test: polls FAST (200 Hz — spikes are short) and reports every
-    # burst plus a rolling 2 s peak so TAP_G (organs.py) can be calibrated:
-    # your taps should read well above the peaks of walking/adjusting.
-    send("tap test: tap once, tap twice, walk around — watch the numbers")
-    last_report = time.ticks_ms()
+    # The explicit channel, end to end. Button.pressed() is True once per
+    # press, latched by the body and consumed on read — so a press is never
+    # reported twice and never missed by a slow poll. last_s() is seconds
+    # since the most recent press, and is NOT consumed by reading it.
+    #
+    # Three things to check:
+    #   1. every deliberate press registers exactly once
+    #   2. the BOOT line above says which edge is live — btn=cb:WAS_PRESSED
+    #      (fires on the press) | cb:WAS_CLICKED (waits for the release) |
+    #      poll:wasPressed | poll:wasClicked | none. This is the FIRST run on
+    #      real hardware, so that token is the thing to read.
+    #   3. FAST presses. M5.update() samples the pin at 20 Hz in heartbeat(),
+    #      so a press+release inside one 50 ms window has no edge to detect —
+    #      by callback or by polling alike. Two presses that close also
+    #      collapse into one True, by design. This recipe deliberately does
+    #      NOT call M5.update() itself, so what you measure is what the seed
+    #      gets.
+    send("button test: press BtnA. Slowly first, then as fast as you can.")
+    n = 0
     while True:
-        Imu.getAccel()
-        Imu.getGyro()
-        b = Tap.burst()
-        if b:
-            send("TAP x{} !".format(b[1]))
-        if time.ticks_ms() - last_report > 2000:
-            send("2s peak: {:.2f} g   (tap threshold TAP_G = 1.2)".format(Tap.peak()))
-            last_report = time.ticks_ms()
-        await asyncio.sleep_ms(5)
+        if Button.pressed():
+            n += 1
+            send("PRESS #{} — last_s now {:.2f}".format(n, Button.last_s()))
+        await asyncio.sleep_ms(20)
 """,
     },
     "lowbat": {

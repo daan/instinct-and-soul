@@ -122,12 +122,31 @@ class _RTAsyncio:
         return getattr(asyncio, name)
 
 
-def _build_scope(*, send, reflect, aio, imu, speaker, synth, mem, m5):
+class _NoButton:
+    """Stand-in for the device's explicit channel: there is no hardware here
+    and nobody to press it, so it is never pressed. Mirrors the device API
+    (main.py's _Button) so a seed written for the board runs unchanged."""
+
+    def pressed(self):
+        return False
+
+    def last_s(self):
+        return None          # never pressed this wearing
+
+
+def _build_scope(*, send, reflect, aio, imu, speaker, synth, mem, m5, iv=0):
     return {
         "__name__":   "__instinct__",
         "__builtins__": __builtins__,
         "send":       send,
         "reflect":    reflect,
+        # No hardware and nobody to press it — always zero clicks, so a
+        # device seed runs here unchanged.
+        "Button":     _NoButton(),
+        # Which instinct am I? A creature that tells a REWRITE from a re-push
+        # compares this against the version in its own ledger (see tilt's
+        # three-lifecycles section). The device runtime injects it too.
+        "IV":         iv,
         "asyncio":    aio,
         "time":       time,
         "math":       math,
@@ -372,6 +391,7 @@ class SimSpine:
         scope = _build_scope(
             send=self._make_send(), reflect=self._make_reflect(), aio=_RTAsyncio(self),
             imu=self.imu, speaker=self.speaker, synth=self.synth, mem=self.mem, m5=self.m5,
+            iv=self.loop.instinct_version,
         )
         organ_names = ()
         if self._organs_attach:

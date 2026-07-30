@@ -10,12 +10,22 @@ instinct scope on every hot-swap — worn at the base of the neck, this body
 watches the wearer's spine the way a cricket watches its ground. The voice
 is the INTERNAL speaker only.
 
+Unlike the earlier tilt arms, condition_3's organ is FED BY THE INSTINCT:
+Posture.feed(a, g) is an explicit call and `Imu` is handed over untouched.
+Nothing in this file reads the IMU, so an instinct that stops feeding stops
+sensing — see lib/organs.py for why that trade was made.
+
 Runtime provides to instinct code:
-  send(msg), asyncio, time, struct, math, M5, Imu, Speaker,
-  Mem, Calc, Posture   (via organs.attach)
+  send(msg)        write a journal line (costs nothing, does NOT summon)
+  reflect(reason)  ask the soul to think, and say why (the only summons)
+  Button           the explicit channel: Button.clicks() / .waiting()
+  IV               this instinct's version number, for telling a rewrite
+                   from a re-push (see the three lifecycles in the README)
+  asyncio, time, struct, math, M5, Imu, Speaker, Mem
+  Posture, Calc (narrowed)        via organs.attach
 
 Device-side libraries flashed to /lib (creatures/tilt/<condition>/lib/*.py):
-  organs.py        -> attach(scope) (the Posture sense)
+  organs.py        -> attach(scope) (the Posture sense; no Tap in this arm)
   creature_mem.py  -> Mem           (persistent named-slot memory)
   calc.py          -> Calc          (streaming signal toolkit)
 """
@@ -348,6 +358,91 @@ def send(msg, urgent=False):
     if (urgent or msg.startswith("CRASH:")) and _wake_now is not None:
         _wake_now.set()
 
+# ── The button: the one explicit channel ───────────────────────────────────
+# One press, one True. Detected HERE, not in the instinct, for two reasons: a
+# callback registered by an instinct would outlive it (swap_instinct replaces
+# the coroutine and unregisters nothing, so every rewrite leaks another
+# handler holding a dead scope), and a latch here means the instinct cannot
+# miss a press by polling slowly or by sitting inside an await.
+#
+# A FLAG, not a counter. Counting invited the reading that two presses mean
+# something different from one, which nothing has shown. Two presses inside a
+# single poll collapse to one True — at the seed's 50 Hz that needs them
+# closer together than a human hand manages, and if a rewrite ever wants to
+# tell a double from a single it can time consecutive presses itself with
+# last_s(). Dropping the count also drops the arbitrary queue cap it needed.
+_btn_flag = False       # one-shot: set on press, cleared on read
+_btn_last = None        # ticks_ms of the most recent press; None until one
+
+
+def _btn_event(*_a):    # *_a: the callback may be handed the button state
+    global _btn_flag, _btn_last
+    _btn_flag = True
+    _btn_last = time.ticks_ms()
+
+
+class _Button:
+    """The instinct's handle on the explicit channel — a module like Posture
+    or Speaker, not a loose function, so every sense in scope is reached the
+    same way. Read-only: the latch above is the body's, so the instinct can
+    consume a press but never invent one.
+
+    Both readings are BODY state: they outlive every instinct rewrite and die
+    with the power, exactly like the organ's."""
+
+    def pressed(self):
+        """True once per press, the moment it lands. Consumed on read — the
+        same press is never reported twice."""
+        global _btn_flag
+        f = _btn_flag
+        _btn_flag = False
+        return f
+
+    def last_s(self):
+        """Seconds since the most recent press, or None if there has not been
+        one this wearing. NOT consumed on read: this is a state, not an event
+        — read it as often as you like and it keeps counting up. Seconds
+        rather than a raw stamp so it needs no epoch and cannot be compared
+        against the wrong clock (ticks_ms wraps; this does not)."""
+        if _btn_last is None:
+            return None
+        return max(0.0, time.ticks_diff(time.ticks_ms(), _btn_last) / 1000.0)
+
+
+def _btn_poll_fn():
+    """Resolve the polling edge-reader ONCE, so the fallback path doesn't
+    raise AttributeError twenty times a second. wasPressed first: it lands on
+    the press itself, where wasClicked waits for the release."""
+    for name in ("wasPressed", "wasClicked"):
+        if hasattr(M5.BtnA, name):
+            return name, getattr(M5.BtnA, name)
+    return None, None
+
+
+# Prefer the driver's own event dispatch: it fires exactly once per press, so
+# nothing depends on how fast anyone polls. It is dispatched synchronously
+# from inside M5.update() — not an interrupt, not a thread — which is why the
+# handler above only sets a flag and never awaits.
+#
+# WAS_PRESSED before WAS_CLICKED so "the moment it lands" is literally true;
+# WAS_CLICKED only fires once the button comes back up. Which edge is live is
+# reported in the BOOT line as btn=... — the tuner's `button` recipe is how
+# that gets confirmed on real hardware, and it has not been yet.
+_btn_cb = None
+for _edge in ("WAS_PRESSED", "WAS_CLICKED"):
+    try:
+        M5.BtnA.setCallback(type=getattr(M5.BtnA.CB_TYPE, _edge), cb=_btn_event)
+        _btn_cb = _edge
+        print("btn: driver callback", _edge)
+        break
+    except Exception as e:
+        print("btn: no {} callback ({})".format(_edge, e))
+_btn_poll_name, _btn_poll = (None, None) if _btn_cb else _btn_poll_fn()
+if not _btn_cb:
+    print("btn: polling in heartbeat" if _btn_poll else
+          "btn: NO usable button API — the explicit channel is dead")
+
+
 def reflect(reason):
     """Ask the soul to think, and say WHY. Journalling never does this —
     send() only writes to the record; this is the one call that summons a
@@ -360,6 +455,7 @@ def reflect(reason):
 INSTINCT_ENV = {
     "send": send,
     "reflect": reflect,
+    "Button": _Button(),
     "asyncio": asyncio,
     "time": time,
     "struct": struct,
@@ -459,6 +555,10 @@ async def heartbeat():
     last_stat = 0
     while True:
         M5.update()
+        # Fallback edge detection, at update()'s own 20 Hz. Skipped entirely
+        # when the driver callback took, since that already fired.
+        if _btn_poll is not None and _btn_poll():
+            _btn_event()
         if DISPLAY_MODE == "debug" and (ALWAYS_ON or usb_present()):
             # Workbench narration: panel stays lit and reports link state,
             # battery, uptime and RESET CAUSE — a brownout-rebooting board
@@ -485,7 +585,10 @@ async def heartbeat():
                 last_stat = time.ticks_ms()
         else:
             stat_lbls = None
-            if M5.BtnA.wasPressed():       # a press wakes the screen briefly
+            # BtnB, not BtnA: BtnA is the creature's explicit channel (the
+            # instinct reads it as the hush) and wasPressed() is one-shot —
+            # two readers race and each swallows presses at random.
+            if M5.BtnB.wasPressed():       # a press wakes the screen briefly
                 M5.Display.setBrightness(80)
                 show(["tilt", "vbat: {}mV".format(M5.Power.getBatteryVoltage()),
                       "ws: " + ("up" if ws else "down")])
@@ -570,11 +673,16 @@ def _boot_line(reason, down_s=None):
     clock = (" clock={:02d}:{:02d}".format(*time.localtime()[3:5])
              if _clock_set else "")
     return ("BOOT: cause={} uptime={}s vbat={}mV vbus={}mV charging={} "
-            "mode={} keepalive={} iv={} wake={}".format(
+            "mode={} keepalive={} iv={} btn={} wake={}".format(
                 _RESET_CAUSES.get(_rc, _rc), time.ticks_ms() // 1000,
                 M5.Power.getBatteryVoltage(), M5.Power.getVBUSVoltage(),
                 M5.Power.isCharging(),
-                WIFI_MODE, HEARTBEAT_INTERVAL, instinct_version, reason)
+                WIFI_MODE, HEARTBEAT_INTERVAL, instinct_version,
+                # WHICH edge is live, not just that one is: WAS_PRESSED
+                # lands on the press, WAS_CLICKED on the release
+                ("cb:" + _btn_cb) if _btn_cb else
+                ("poll:" + _btn_poll_name if _btn_poll else "none"),
+                reason)
             + ("" if down_s is None else " down={}s".format(down_s))
             + clock)
 
