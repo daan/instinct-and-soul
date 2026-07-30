@@ -1,42 +1,43 @@
 """
-main.py — M5StickS3 perception runtime (robot_dog stage 2_perception).
+main.py — M5StickS3 + PuppyC HAT + thermal/ToF runtime (robot_dog 3_interaction).
 
-The dog's senses, alone: a VL53L0X time-of-flight ranger (0x29) and the
-M5 Thermal2 unit (MLX90640 behind an MCU, 0x32) SHARING the Grove hardware
-I²C bus (I2C(0), sda=9, scl=10). No legs — the PuppyC HAT is absent in this
-stage; 1_action has the motion half, 3_combined will merge them.
+The merge: 1_action's legs and 2_perception's senses on one body, which is the
+first robot_dog stage that can both perceive at a distance AND act on what it
+perceives. Two I2C buses coexist:
 
-The runtime owns a PERCEPTION PUMP task that runs regardless of WiFi/spine
-state, so the display is the iteration instrument (flash → look):
+  SoftI2C(scl=0, sda=8) @0x38   the PuppyC HAT — four single-DOF legs
+  I2C(0, sda=9, scl=10)         the Grove bus — VL53L0X @0x29 (nose beam)
+                                and M5 Thermal2 @0x32 (32x24 MLX90640)
 
-  - the 32x24 thermal image, autoscaled, interlaced repaint per subpage
-  - white box = largest warm blob bounds, cyan dot = its centroid
-    (extraction ported from test/STICKS3/test_warmth — the /warm contract:
-    ambient = frame median; blob = largest 4-connected component above
-    ambient + delta; centroid excess-weighted)
-  - ambient / delta / blob area / +C / centroid / ToF mm / fps as text
-  - BtnA cycles delta (1.5 / 2.5 / 4.0 / 6.0 C) to probe detection margin
-  - serial: one greppable "perc:" summary line per second
-  - stethoscope (UDP-OSC :9001, STETHO_HOST): the same percepts as LEVELS
-    with sparklines — area / excess_c / cx / cy / tof_mm at ~4 Hz, ambient
-    / delta / fps at 1 Hz, plus a `warm` EVENT on every presence flip. The
-    display shows one instant; `stetho` on the laptop shows the last 48
-    samples, which is what a NOISE FLOOR actually needs. Advisory and
-    lossy — the display and the serial line stay authoritative.
+Runtime-owned, surviving every instinct hot-swap:
 
-Instincts don't touch the sensors; they read percepts the pump maintains:
+  PERCEPTION PUMP   thermal frame -> largest warm blob (area, centroid,
+                    excess degC) + ToF mm, exposed as the Thermal and ToF
+                    organs and streamed to the stethoscope. The frame itself
+                    is DISCARDED: no instinct can ask for pixels, and the
+                    display is dark. Instincts read percepts; they never
+                    touch the bus.
+  LEGS              the gait as an organ. Instincts COMMAND a mode
+                    (forward / back / turn / stop) and the organ runs the
+                    stride, counts cycles, and refuses to exceed the gentle
+                    envelope. It also holds the tip guard, which is a
+                    constitutional guardrail and therefore lives where an
+                    instinct cannot remove it.
 
-  warm()             → dict: present, area, cx, cy, excess_c, ambient_c,
-                       age_ms (stale-aware; camera frame, never "a person")
-  read_distance_mm() → latest ToF mm (0 = no echo), or None if absent
-  set_warm_delta(c)  → detection threshold, C above ambient
-  set_thermal_draw(on) → give the screen to the instinct (False) or the
-                       pump (True; also redraws the layout)
+What this stage deliberately does NOT have yet, because it is blocked on
+measurement (see README "What we are missing"): the Proxemics organ, the
+efference-corrected HUMAN_* token vocabulary, and the act-sequence grammar.
+Legs.cycles() and Legs.since_still_ms() are the raw material for those; the
+honest tokens cannot be minted until mm/cycle and deg/cycle are measured on
+this body. Until then instincts read raw percepts and say what they see.
 
-WiFi failure is non-fatal here: perception iteration must not need a
-network. The WS reconnect loop keeps retrying in the background.
-
-Register protocol notes for the Thermal2: see test/STICKS3/test_thermal.
+Gait envelope, measured 2026-07-30 on this chassis with the camera upright:
+amplitude 30deg, period 1000ms, stance_duty 0.65, straight-ramp stride,
+amplitude eased in over two cycles. The camera makes this a tall inverted
+pendulum; the old 40/500 tips it, and smoothing the stride made tipping
+WORSE (a smooth reversal dwells at the extreme leg angle). Period is the
+gentleness lever. Turning scrubs the feet sideways, so it fights friction
+and is the most tip-prone move in the vocabulary.
 """
 
 import M5
@@ -77,6 +78,71 @@ import struct
 import math
 from machine import Pin, I2C, PWM, SoftI2C
 
+# ── PuppyC bus + helpers ────────────────────────────────────────────────────
+# Lifted verbatim from 1_action (the no-sharing convention: each stage folder
+# is self-contained). The HAT is on SoftI2C GPIO0/8 and does not collide with
+# the Grove bus below.
+
+PUPPYC_ADDR = 0x38
+FL, FR, BL, BR = 0, 1, 2, 3
+CENTER = 90
+
+# Per-leg trim: (direction, offset). direction +1 normal, -1 flipped.
+# Calibrated so set_leg(leg, target>90) swings the leg toward the nose.
+# Direction is a wiring fact and stays in source. Offsets are per-puppy
+# physical calibration and are overlaid from /flash/calibration.json (written
+# by the autotrim recipe).
+TRIM = {
+    FL: (-1, 0),
+    FR: (+1, 0),
+    BL: (-1, 0),
+    BR: (+1, 0),
+}
+
+try:
+    import json as _json
+    with open("/flash/calibration.json") as _f:
+        _cal = _json.load(_f)
+    for _name, _leg in (("FL", FL), ("FR", FR), ("BL", BL), ("BR", BR)):
+        if _name in _cal:
+            _dir, _ = TRIM[_leg]
+            TRIM[_leg] = (_dir, int(_cal[_name]))
+    print("calibration: loaded", _cal)
+except OSError:
+    print("calibration: no calibration.json (using defaults)")
+except Exception as _e:
+    print("calibration: load failed:", _e)
+
+i2c_hat = SoftI2C(scl=Pin(0), sda=Pin(8), freq=100000)
+
+
+def _write_servo(channel, angle):
+    angle = max(0, min(180, int(angle)))
+    try:
+        i2c_hat.writeto_mem(PUPPYC_ADDR, channel, bytes([angle]))
+    except Exception as e:
+        print("puppyc: i2c write error ch={} ang={} err={}".format(channel, angle, e))
+
+
+def set_leg(leg, target):
+    direction, offset = TRIM[leg]
+    _write_servo(leg, CENTER + direction * (target - CENTER) + offset)
+
+
+def set_all(fl, fr, bl, br):
+    set_leg(FL, fl)
+    set_leg(FR, fr)
+    set_leg(BL, bl)
+    set_leg(BR, br)
+
+
+def center_all():
+    set_all(CENTER, CENTER, CENTER, CENTER)
+
+
+# Centre the legs early — covers power-on hold + post-flash junk.
+center_all()
+
 # UIFlow firmware doesn't put /flash/lib on sys.path by default. Our flashed
 # creature drivers land there (lib/*.py -> /lib/ via mpremote, which is
 # /flash/lib/ at runtime), so insert it before importing.
@@ -85,12 +151,13 @@ if "/flash/lib" not in _sys.path:
     _sys.path.insert(0, "/flash/lib")
 
 # ── The stethoscope: the pump's percepts as an EEG, over UDP-OSC ───────────
-# Advisory and lossy by contract. The display shows one instant; `stetho` on
-# the laptop sparklines the last 48 samples, which is the instrument the
-# blob-flicker question actually needs (area flicker at a FIXED pose is the
-# noise floor the eventual Warmth organ must absorb — you cannot read a noise
-# floor off a number that repaints 8×/s). Detached = no-ops, so a missing
-# driver or a dead radio costs the pump nothing.
+# Advisory and lossy by contract. With the panel dark this is the ONLY live
+# view of the percepts: `stetho` on the laptop sparklines the last 48 samples,
+# which is the instrument the blob-flicker question actually needed anyway
+# (area flicker at a FIXED pose is the noise floor a later Warmth organ must
+# absorb, and a noise floor is a distribution over time — never readable off a
+# number that repaints 8x/s). Detached = no-ops, so a missing driver or a dead
+# radio costs the pump nothing.
 try:
     from stethoscope import tap as _tap, probe as _probe
 except ImportError:
@@ -131,7 +198,17 @@ if TOF_ADDR in _found:
 else:
     print("tof: no 0x29 on grove bus!")
 
-# ── The /warm percept state (pump writes, instincts read) ──────────────────
+# ── The sense organs ───────────────────────────────────────────────────────
+# Two objects, in the shape of M5's own `Imu`: module-level state the pump
+# writes and instincts only read, surviving every hot-swap, unfeedable.
+#
+# THE THERMAL IMAGE IS NOT PART OF THE API. The pump reduces 768 pixels to
+# one warm SHAPE and throws the frame away. An instinct cannot ask for pixels,
+# because a creature that can see an image will start reasoning about images —
+# and this body's epistemology is "a warm shape, this big, there", nothing
+# more. The image is also gone from the display: the screen stays dark (the
+# camera mount covers it anyway, and the backlight is battery money). The
+# diagnostic channels are the serial `perc:` line and the stethoscope.
 
 # Beyond this the VL53L0X is not reporting a distance, it is reporting that it
 # failed: readings run to the ~8190 mm sentinel, and even below that this
@@ -148,38 +225,68 @@ _warm = {"present": False, "area": 0, "cx": 0.0, "cy": 0.0,
 _delta_c = DELTAS[1]
 _dist_mm = None
 _dist_t = 0
-_draw = True
-
-
-def warm():
-    """Latest warm-blob percept. A warm SHAPE in MY camera frame — never a
-    person, never a gaze. age_ms tells you how stale it is (thermal runs at
-    ~8 subpages/s, so <300ms is fresh)."""
-    d = dict(_warm)
-    d["age_ms"] = time.ticks_diff(time.ticks_ms(), d.pop("t_ms"))
-    return d
-
-
-def read_distance_mm():
-    """Latest ToF reading in millimetres, or None if the sensor isn't
-    available. ~30 (very close) to ~2000 (out of range); 0 = no echo."""
-    return _dist_mm
-
-
-def set_warm_delta(c):
-    global _delta_c
-    _delta_c = float(c)
-
-
-def set_thermal_draw(on):
-    global _draw
-    _draw = bool(on)
-    if _draw:
-        _layout()
 
 
 def celsius(raw):
     return raw / 128 - 64
+
+
+class _Thermal:
+    """The warm-shape sense. 32x24 MLX90640 behind the pump."""
+
+    FRAME_W = 32
+    FRAME_H = 24
+    CENTRE_X = 15.5     # frame centre, for "is it ahead of me"
+
+    def blob(self):
+        """The largest warm shape in view, as a dict:
+
+            present    a shape above threshold exists
+            area       its size in pixels, of 768
+            cx, cy     its excess-weighted centre (x 0..31, y 0..23)
+            excess_c   how many degC above ambient it averages
+            ambient_c  the frame's ambient temperature
+            age_ms     how stale this is (<300 ms is fresh)
+
+        A warm SHAPE in my camera frame — never a person, never a gaze."""
+        d = dict(_warm)
+        d["age_ms"] = time.ticks_diff(time.ticks_ms(), d.pop("t_ms"))
+        return d
+
+    def present(self):
+        return _warm["present"]
+
+    def ambient_c(self):
+        return _warm["ambient_c"]
+
+    def delta(self):
+        """The current detection threshold, degC above ambient."""
+        return _delta_c
+
+    def set_warm_delta(self, c):
+        """Detection threshold in degC above ambient (default 2.5). Lower
+        catches distant people and more noise; higher rejects radiators and
+        coffee cups along with faint real ones."""
+        global _delta_c
+        _delta_c = float(c)
+
+
+class _ToF:
+    """The nose beam. VL53L0X, one narrow ray straight ahead."""
+
+    def read_distance_mm(self):
+        """Millimetres along the forward beam: ~30 very close, ~2000+ open
+        space, 0 = no echo at all, None = no sensor. The beam is NARROW and
+        can miss entirely what the thermal sense plainly sees."""
+        return _dist_mm
+
+    def age_ms(self):
+        """How stale the reading is. The pump cycles the sensor at ~10 Hz."""
+        return time.ticks_diff(time.ticks_ms(), _dist_t)
+
+
+Thermal = _Thermal()
+ToF = _ToF()
 
 
 def largest_blob(frame, thr_raw, amb_raw):
@@ -232,70 +339,31 @@ def largest_blob(frame, thr_raw, amb_raw):
     return best
 
 
-# ── Display: pump-owned layout ─────────────────────────────────────────────
-
-SCALE = 4
-IMG_X = 3
-IMG_Y = 40
-
-
-def build_palette(n=64):
-    stops = [
-        (0x00, 0x00, 0x00),
-        (0x30, 0x00, 0x70),
-        (0x90, 0x10, 0x90),
-        (0xD0, 0x30, 0x00),
-        (0xFF, 0xA0, 0x00),
-        (0xFF, 0xFF, 0x40),
-        (0xFF, 0xFF, 0xFF),
-    ]
-    segs = len(stops) - 1
-    pal = []
-    for i in range(n):
-        f = i * segs / (n - 1)
-        s = min(segs - 1, int(f))
-        t = f - s
-        r0, g0, b0 = stops[s]
-        r1, g1, b1 = stops[s + 1]
-        pal.append((int(r0 + (r1 - r0) * t) << 16)
-                   | (int(g0 + (g1 - g0) * t) << 8)
-                   | int(b0 + (b1 - b0) * t))
-    return pal
+# ── The display: dark ──────────────────────────────────────────────────────
+# The screen is OFF on this stage, deliberately. The camera mount covers it,
+# the backlight is a steady ~10-20 mA of battery, and the thermal image it used
+# to show is no longer something this creature is allowed to have (see the
+# organ note above). Nothing paints anything after boot.
+#
+# What replaced it: the serial `perc:` line once a second, and the stethoscope
+# (UDP-OSC :9001 -> `stetho` on the laptop), which sparklines the same percepts
+# over time and is a better instrument than the panel ever was.
+#
+# _head() is kept as a no-op sink so the connect/disconnect call sites read the
+# same as the other stages; it prints instead of drawing.
 
 
-PAL = build_palette()
-TOP = len(PAL) - 1
-
-W = M5.Widgets
-F = W.FONTS
-D = M5.Display
-
-lbl_head = None
-lbl_amb = None
-lbl_blob = None
-lbl_cen = None
-lbl_tof = None
-lbl_fps = None
-_head_text = "booting"
-
-
-def _layout():
-    global lbl_head, lbl_amb, lbl_blob, lbl_cen, lbl_tof, lbl_fps
-    W.fillScreen(0x000000)
-    W.Label("robot_dog 2_perc", 4, 4, 1.0, 0xFFFFFF, 0x000000, F.DejaVu12)
-    lbl_head = W.Label(_head_text, 4, 20, 1.0, 0x66ff66, 0x000000, F.DejaVu12)
-    lbl_amb  = W.Label("", 4, 144, 1.0, 0xffffff, 0x000000, F.DejaVu12)
-    lbl_blob = W.Label("", 4, 160, 1.0, 0xff8844, 0x000000, F.DejaVu12)
-    lbl_cen  = W.Label("", 4, 176, 1.0, 0x44ffff, 0x000000, F.DejaVu12)
-    lbl_tof  = W.Label("", 4, 192, 1.0, 0x8888ff, 0x000000, F.DejaVu12)
-    lbl_fps  = W.Label("", 4, 210, 1.0, 0xaaaaaa, 0x000000, F.DejaVu12)
+def _display_off():
+    try:
+        M5.Widgets.fillScreen(0x000000)
+        M5.Display.setBrightness(0)
+        print("display: off (dark by policy)")
+    except Exception as e:
+        print("display: could not blank:", e)
 
 
 def _head(text):
-    global _head_text
-    _head_text = text
-    if _draw and lbl_head:
-        lbl_head.setText(text)
+    print("head: {}".format(text))
 
 
 # ── The perception pump ────────────────────────────────────────────────────
@@ -303,10 +371,8 @@ def _head(text):
 async def perception_pump():
     global _warm, _delta_c, _dist_mm, _dist_t
 
-    _layout()
     if not _thermal_ok:
-        if lbl_amb:
-            lbl_amb.setText("no thermal 0x32!")
+        print("thermal: ABSENT — blob() will report present=False forever")
 
     frame = [0] * 768        # persistent full frame, half refreshed per subpage
     have = [False, False]    # which subpages have arrived at least once
@@ -389,30 +455,11 @@ async def perception_pump():
             frame[(y << 5) + ((i & 15) << 1) + ((y & 1) != subpage)] = vals[i]
         have[subpage] = True
 
-        # ── image (autoscaled, same as test_warmth) ────────────────────────
-        if disp_lo is None:
-            disp_lo, disp_hi = lo_raw, hi_raw
-        else:
-            disp_lo += (lo_raw - disp_lo) * 0.2
-            disp_hi += (hi_raw - disp_hi) * 0.2
-        span = disp_hi - disp_lo
-        if span < 256:
-            span = 256
-        k = TOP / span
-        lo = disp_lo
-        if _draw:
-            fill = D.fillRect
-            for i in range(384):
-                y = i >> 4
-                x = ((i & 15) << 1) + ((y & 1) != subpage)
-                lvl = int((vals[i] - lo) * k)
-                if lvl < 0:
-                    lvl = 0
-                elif lvl > TOP:
-                    lvl = TOP
-                fill(IMG_X + x * SCALE, IMG_Y + y * SCALE, SCALE, SCALE, PAL[lvl])
+        # The autoscale that used to drive the image is gone with it — nothing
+        # here needs a display range any more. The raw frame is reduced to one
+        # blob below and then discarded; it never leaves this function.
 
-        # give the ws/heartbeat tasks a slice after the draw burst
+        # give the ws/heartbeat tasks a slice between frames
         await asyncio.sleep_ms(0)
 
         # ── blob extraction (needs both subpages at least once) ────────────
@@ -424,11 +471,6 @@ async def perception_pump():
             area, cx, cy, mexc, x0, y0, x1, y1 = blob
             _warm = {"present": True, "area": area, "cx": cx, "cy": cy,
                      "excess_c": mexc, "ambient_c": celsius(med), "t_ms": now}
-            if _draw:
-                D.drawRect(IMG_X + x0 * SCALE, IMG_Y + y0 * SCALE,
-                           (x1 - x0 + 1) * SCALE, (y1 - y0 + 1) * SCALE, 0xFFFFFF)
-                D.fillRect(IMG_X + int(cx * SCALE) + SCALE // 2 - 1,
-                           IMG_Y + int(cy * SCALE) + SCALE // 2 - 1, 3, 3, 0x00FFFF)
         elif have[0] and have[1]:
             _warm = {"present": False, "area": 0, "cx": 0.0, "cy": 0.0,
                      "excess_c": 0.0, "ambient_c": celsius(med), "t_ms": now}
@@ -474,16 +516,6 @@ async def perception_pump():
         if dt >= 1000:
             fps = subpages * 500.0 / dt
             mm = _dist_mm if _dist_mm is not None else -1
-            if _draw:
-                lbl_amb.setText("amb {:4.1f}C  d {:.1f}".format(celsius(med), _delta_c))
-                if blob:
-                    lbl_blob.setText("blob {:3d}px  +{:.1f}C".format(blob[0], blob[3]))
-                    lbl_cen.setText("at {:4.1f},{:4.1f}".format(blob[1], blob[2]))
-                else:
-                    lbl_blob.setText("no warm shape")
-                    lbl_cen.setText("")
-                lbl_tof.setText("tof {} mm".format(mm) if mm >= 0 else "tof --")
-                lbl_fps.setText("{:.1f} fps".format(fps))
             if blob:
                 print("perc: amb={:.1f} d={:.1f} area={} exc={:.1f} cen=({:.1f},{:.1f}) tof={} fps={:.1f}".format(
                     celsius(med), _delta_c, blob[0], blob[3], blob[1], blob[2], mm, fps))
@@ -498,6 +530,289 @@ async def perception_pump():
             _probe("fps", fps)
             subpages = 0
             last_stat = now
+
+
+# ── The Legs organ ─────────────────────────────────────────────────────────
+# The gait, owned by the runtime. Module-level state, so it survives instinct
+# hot-swaps; read-only from inside an instinct except through the four command
+# methods; unfeedable. Instincts declare a MODE and the organ runs the stride.
+#
+# Why an organ and not a helper an instinct copies in: three things belong
+# here and nowhere else.
+#
+#   1. The gentle envelope. Amplitude and period are capped (see the module
+#      docstring for the measurements). `pace` scales within the envelope, it
+#      does not escape it — an unbounded pace on this tall chassis is a way to
+#      fall over, and that must not be one rewrite away.
+#   2. The tip guard. constitution.md is fixed and the soul may not revise it,
+#      so its safety clause is implemented where an instinct cannot reach:
+#      past TIP_SIN of tilt, HELD for TIP_PERSIST_MS, the legs centre
+#      themselves and the body says so.
+#   3. The efference log. cycles() and since_still_ms() are what a later
+#      Proxemics organ subtracts to tell "the human moved" from "I moved".
+#      Nothing can attribute motion honestly if the motor record lives inside
+#      a coroutine that gets cancelled on every rewrite.
+
+GAIT_AMP = 30            # degrees, ceiling. 40 tips this chassis.
+GAIT_PERIOD_MS = 1000    # per stride cycle, floor. Shorter tips this chassis.
+GAIT_DUTY = 0.65         # stance fraction. NEVER 0.5 — a symmetric stride
+                         # nets zero force and translates nowhere.
+GAIT_RAMP_CYCLES = 0.4   # ease amplitude in; a full-stride first step lurches.
+                         # MUST stay well under the shortest phrase anything
+                         # commands. The ramp scales amplitude by
+                         # min(1, cycles/RAMP), so a phrase that ENDS inside
+                         # the ramp never reaches full stride: at 2.0 (the
+                         # first value here) a 0.6-cycle turn phrase peaked at
+                         # 5.4 deg and the dog merely twitched, while the
+                         # tuner's continuous `turn` worked fine because it
+                         # ramped all the way in. 0.4 cycles = 400 ms of
+                         # easing, which is all the lurch protection needs.
+GAIT_DT_MS = 20
+PACE_MIN = 0.35          # below this the legs lack the authority to move us
+# ── The tip guard's thresholds ─────────────────────────────────────────────
+# These are the SINE OF THE TILT ANGLE, not a raw acceleration magnitude:
+# horizontal / total, which cancels the overall scale. That distinction is the
+# whole fix for a false trip. A stride shakes every axis at once, so the raw
+# horizontal number inflates while the body is perfectly upright — the first
+# version of this guard used |ax,ay| and fired at tilt=0.56 mid-walk with the
+# dog still on its feet (observed 2026-07-30), then cleared to 0.08 a moment
+# later. Dividing by |a| asks about ORIENTATION instead of shaking.
+TIP_SIN = 0.55           # sin(33 deg) — going over
+TIP_CLEAR_SIN = 0.35     # sin(20 deg) — hysteresis, call it recovered
+# And it must HOLD. A real tip develops over the pendulum time constant
+# (~100 ms here) and then stays over; a stride transient is one or two ticks.
+# Requiring persistence is what separates them, and it is free.
+TIP_PERSIST_MS = 200
+TIP_SMOOTH = 4           # samples averaged before the test, to kill spikes
+
+
+class _Legs:
+    def __init__(self):
+        self._mode = "still"      # still | forward | back | cw | ccw
+        self._pace = 1.0
+        self._t0 = time.ticks_ms()      # when this mode started
+        self._still_since = time.ticks_ms()
+        self._cycles = 0.0
+        self._tipped = False
+        self._tilt = 0.0          # smoothed sin(tilt angle)
+        self._over_since = None   # when the tilt first crossed, for persistence
+        self._probe_t = time.ticks_ms()   # last stethoscope emission
+
+    # ── commands (the only writable surface) ──────────────────────────────
+    def _set(self, mode, pace):
+        pace = PACE_MIN if pace < PACE_MIN else (1.0 if pace > 1.0 else pace)
+        if mode == self._mode and abs(pace - self._pace) < 0.01:
+            return                      # idempotent: don't restart the stride
+        if self._tipped and mode != "still":
+            return                      # the guard holds until we are upright
+        self._mode = mode
+        self._pace = pace
+        self._t0 = time.ticks_ms()
+        self._cycles = 0.0
+        if mode == "still":
+            self._still_since = time.ticks_ms()
+            # Return to a neutral stance. Without this the loop simply stops
+            # writing servos and the legs FREEZE wherever the stride left them
+            # — standing crooked on an asymmetric stance, which is less stable
+            # on a top-heavy body and makes the next phrase jerk out of a
+            # random pose. It also meant every "stand still and look" happened
+            # while standing lopsided.
+            center_all()
+
+    def forward(self, pace=1.0):
+        self._set("forward", pace)
+
+    def back(self, pace=1.0):
+        self._set("back", pace)
+
+    def turn(self, direction, pace=1.0):
+        """direction: "cw" or "ccw". Turning scrubs the feet sideways, so it
+        fights friction and is the most tip-prone move — pace down for it."""
+        self._set("ccw" if str(direction).lower() == "ccw" else "cw", pace)
+
+    def stop(self):
+        self._set("still", 1.0)
+
+    # ── poses and expression ──────────────────────────────────────────────
+    # Named shapes rather than four magic numbers every instinct has to
+    # rediscover. Each stops the gait first: the stride is a background task
+    # and would otherwise walk straight out of the pose.
+
+    POSE_STAND = (90, 90, 90, 90)
+    POSE_SIT = (90, 90, 50, 50)      # front centred, rear folded back
+    POSE_REST = (30, 30, 30, 30)     # legs out to the sides; unloads the servos
+
+    def stand(self):
+        self.stop()
+        set_all(*self.POSE_STAND)
+
+    def sit(self):
+        self.stop()
+        set_all(*self.POSE_SIT)
+
+    def rest(self):
+        """Down on the belly, legs splayed. The only pose that takes the load
+        off the servos — the one to hold if you mean to be still a while."""
+        self.stop()
+        set_all(*self.POSE_REST)
+
+    async def wiggle(self, amp=20, cycles=3.0, period_ms=600, leg=None):
+        """Expressive motion that travels NOWHERE — the one thing a rover
+        cannot do. It works precisely BECAUSE it is symmetric: a symmetric
+        sweep nets zero force over a cycle, so the body wags without going
+        anywhere. The same physics that makes a symmetric stride useless for
+        walking makes it the right shape for a wag.
+
+        leg=None wags the whole body (diagonal pairs in antiphase);
+        leg=FL/FR/BL/BR wags that one leg — the paw-wave shape.
+
+        Amplitude is capped at the gait envelope: a big fast wag tips this
+        chassis over exactly as well as a big fast stride does. A COROUTINE —
+        await it. Returns the legs to centre when it finishes."""
+        self.stop()
+        amp = GAIT_AMP if amp > GAIT_AMP else (2 if amp < 2 else amp)
+        period_ms = 200 if period_ms < 200 else period_ms
+        steps = int(cycles * period_ms / GAIT_DT_MS)
+        for i in range(steps):
+            if self._tipped:
+                break
+            v = amp * math.sin(2 * math.pi * i * GAIT_DT_MS / period_ms)
+            if leg is None:
+                set_all(90 + v, 90 - v, 90 - v, 90 + v)
+            else:
+                set_leg(leg, 90 + v)
+            await asyncio.sleep_ms(GAIT_DT_MS)
+        center_all()
+
+    # ── percepts (what an instinct may read) ──────────────────────────────
+    def mode(self):
+        return self._mode
+
+    def pace(self):
+        return self._pace
+
+    def moving(self):
+        return self._mode != "still"
+
+    def cycles(self):
+        """Completed stride cycles since the current mode began. With a
+        measured mm/cycle this becomes distance travelled; until then it is
+        an honest count of strides and nothing more."""
+        return self._cycles
+
+    def since_still_ms(self):
+        """How long since the legs last stopped. The efference gate: the
+        thermal centroid sloshes and the ToF beam pitches while we walk, so a
+        percept is only trustworthy some settling time after this passes."""
+        return time.ticks_diff(time.ticks_ms(), self._still_since)
+
+    def tipped(self):
+        return self._tipped
+
+    # ── the stride ────────────────────────────────────────────────────────
+    def _phase(self, t, amp):
+        u = t % 1.0
+        if u < GAIT_DUTY:
+            u = u / GAIT_DUTY               # slow stance: the propulsive push
+        else:
+            u = (u - GAIT_DUTY) / (1 - GAIT_DUTY)   # fast swing: unloaded
+            amp = -amp
+        # Straight ramp, deliberately. A cosine reverses smoothly but DWELLS at
+        # the extreme leg angle, and on this tall body the dwell outlasts the
+        # pendulum time constant and tips us. Measured 2026-07-30.
+        return amp - 2 * amp * u
+
+    def _read_tilt(self):
+        """sin(tilt angle), smoothed. Horizontal over TOTAL magnitude, so the
+        answer is about orientation and not about how hard we are shaking."""
+        ax, ay, az = Imu.getAccel()
+        mag = (ax * ax + ay * ay + az * az) ** 0.5
+        if mag < 0.2:
+            return self._tilt          # freefall or a bad read: keep the last
+        s = ((ax * ax + ay * ay) ** 0.5) / mag
+        # exponential average over ~TIP_SMOOTH samples
+        k = 1.0 / TIP_SMOOTH
+        self._tilt += (s - self._tilt) * k
+        return self._tilt
+
+    async def run(self):
+        while True:
+            now = time.ticks_ms()
+            tilt = self._read_tilt()
+
+            if tilt > TIP_SIN:
+                if self._over_since is None:
+                    self._over_since = now
+            else:
+                self._over_since = None
+
+            # Fire only once the tilt has HELD past the threshold. A stride or
+            # a turn spikes it for a tick or two while the body is fine; going
+            # over actually stays over.
+            over_held = (self._over_since is not None
+                         and time.ticks_diff(now, self._over_since) >= TIP_PERSIST_MS)
+
+            if not self._tipped and over_held:
+                # A guardrail, not a behaviour: centre the legs and say so.
+                self._tipped = True
+                self._mode = "still"
+                self._still_since = now
+                center_all()
+                send("tipped: tilt={:.2f} held {}ms — legs centred".format(
+                    tilt, TIP_PERSIST_MS), urgent=True)
+                _tap("tipped", tilt=round(tilt, 2))
+                reflect("I went over (tilt {:.2f}) and stopped my legs. Whatever "
+                        "I was doing, my body cannot do it from here.".format(tilt))
+            elif self._tipped and tilt < TIP_CLEAR_SIN:
+                self._tipped = False
+                self._over_since = None
+                send("upright again: tilt={:.2f}".format(tilt))
+
+            # Put tilt on the stethoscope at ~5 Hz. TIP_SIN is still a guess,
+            # and this is how it stops being one: walk, turn, and read off how
+            # high the trace actually goes with the body upright. The threshold
+            # belongs just above that, not wherever it was first written.
+            if time.ticks_diff(now, self._probe_t) >= 200:
+                self._probe_t = now
+                _probe("tilt", tilt)
+                _probe("legs", 0.0 if self._mode == "still" else self._pace)
+
+            if self._mode == "still" or self._tipped:
+                await asyncio.sleep_ms(GAIT_DT_MS)
+                continue
+
+            t = time.ticks_diff(time.ticks_ms(), self._t0) / float(GAIT_PERIOD_MS)
+            self._cycles = t
+            amp = GAIT_AMP * self._pace
+            g = min(1.0, t / GAIT_RAMP_CYCLES)
+            if self._mode == "forward":
+                a = g * self._phase(t, amp)
+                b = g * self._phase(t + 0.5, amp)
+                set_all(90 + a, 90 + b, 90 + b, 90 + a)
+            elif self._mode == "back":
+                a = g * self._phase(t, -amp)
+                b = g * self._phase(t + 0.5, -amp)
+                set_all(90 + a, 90 + b, 90 + b, 90 + a)
+            else:
+                # Differential stride: left legs one way, right legs the other,
+                # diagonal trot pairing preserved (FL+BR on t, FR+BL on t+0.5).
+                # Determined empirically on the hardware, 2026-07-30. Driving
+                # the LEFT legs propulsively forward and the RIGHT legs
+                # backward tank-steers the body to its RIGHT — clockwise seen
+                # from above. This originally read `1 if "ccw"`, which mirrored
+                # every turn: asking for cw turned ccw. The word is the
+                # creature's, so its meaning is fixed HERE, once.
+                s = -1 if self._mode == "ccw" else 1
+                al, ar = s * amp, -s * amp
+                set_all(90 + g * self._phase(t,       al),
+                        90 + g * self._phase(t + 0.5, ar),
+                        90 + g * self._phase(t + 0.5, al),
+                        90 + g * self._phase(t,       ar))
+            await asyncio.sleep_ms(GAIT_DT_MS)
+
+
+Legs = _Legs()
+
 
 # ── Config ─────────────────────────────────────────────────────────────────
 
@@ -847,21 +1162,34 @@ INSTINCT_ENV = {
     "M5": M5,
     "Imu": Imu,
     "Speaker": Speaker,
-    "Widgets": Widgets,
-    # perception body API (pump-maintained percepts; don't touch the bus)
-    "warm": warm,
-    "read_distance_mm": read_distance_mm,
-    "set_warm_delta": set_warm_delta,
-    "set_thermal_draw": set_thermal_draw,
-    "i2c_grove": i2c_grove,
-    "THERMAL_ADDR": THERMAL_ADDR,
+    # ── the senses, as organs ─────────────────────────────────────────────
+    # Deliberately NOT here: the thermal frame, and any way to draw it. The
+    # pump reduces 768 pixels to one warm shape and discards the rest, so an
+    # instinct cannot reason about an image even if a rewrite wants to.
+    "Thermal": Thermal,
+    "ToF": ToF,
+    # ── motion ────────────────────────────────────────────────────────────
+    # Legs is the rung to write against: command a mode or a pose, read the
+    # efference back. set_leg/set_all are the lower rung, for a shape the
+    # named moves cannot make.
+    "Legs": Legs,
+    "set_leg": set_leg,
+    "set_all": set_all,
+    "center_all": center_all,
+    "FL": FL, "FR": FR, "BL": BL, "BR": BR,
+    "CENTER": CENTER,
+    # The live trim table. Here for the tuner's autotrim/trimdump, which have
+    # to read and rewrite it; a creature has no reason to touch it.
+    "TRIM": TRIM,
 }
 
 DEFAULT_INSTINCT = """
 async def run():
+    Legs.stop()
     while True:
-        w = warm()
-        send("idle warm_present={} tof={}".format(w["present"], read_distance_mm()))
+        b = Thermal.blob()
+        send("idle warm={} tof={} legs={}".format(
+            b["present"], ToF.read_distance_mm(), Legs.mode()))
         await asyncio.sleep(5)
 """
 
@@ -897,6 +1225,12 @@ async def swap_instinct(code):
             await current_task
         except asyncio.CancelledError:
             pass
+    # A cancelled instinct leaves the legs wherever its last command put them,
+    # and the Legs organ would happily keep striding on behalf of code that no
+    # longer exists. Stop before the next instinct starts: a rewrite should
+    # begin from stillness, not inherit a gait it never asked for.
+    Legs.stop()
+    center_all()
     current_task = asyncio.create_task(run_instinct(code))
     print("instinct: swapped ({} bytes)".format(len(code)))
 
@@ -912,8 +1246,8 @@ async def session_start_cleanup():
         except asyncio.CancelledError:
             pass
         current_task = None
-    # Reclaim the display for the pump — an instinct may have taken it.
-    set_thermal_draw(True)
+    Legs.stop()
+    center_all()
     try:
         Speaker.end()
     except Exception:
@@ -1047,6 +1381,10 @@ async def ws_listener():
 
 async def main():
     asyncio.create_task(perception_pump())
+    # The gait runs as its own task, independent of whichever instinct is
+    # loaded — that is what makes it survive a hot-swap and what lets the tip
+    # guard keep working while a crashed instinct is being replaced.
+    asyncio.create_task(Legs.run())
     await swap_instinct(DEFAULT_INSTINCT)
     asyncio.create_task(heartbeat())
     while True:
@@ -1084,8 +1422,11 @@ elif MODE == "sta":
 else:
     raise ValueError("MODE must be 'ap' or 'sta'")
 
-# Arm the organ stream at boot, not only at ws-connect: pure perception
-# iteration needs no spine here, and `stetho` is then the whole instrument.
+# The screen is dark on this stage by policy — see the display note above.
+_display_off()
+
+# Arm the organ stream at boot, not only at ws-connect: the stethoscope is now
+# the only live view of the percepts, since the panel no longer shows them.
 _arm_stetho()
 
 asyncio.run(main())

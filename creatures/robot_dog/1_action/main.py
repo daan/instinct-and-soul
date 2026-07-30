@@ -24,6 +24,16 @@ key differences:
 import M5
 from M5 import *
 import time
+import machine
+
+# Why did we boot? Decisive when hunting spontaneous resets: watchdog vs
+# brownout vs power-on look identical from outside (the servo rail makes
+# brownouts a live hazard here). Read before M5.begin() touches anything.
+_RESET_CAUSES = {machine.PWRON_RESET: "PWRON", machine.HARD_RESET: "HARD",
+                 machine.WDT_RESET: "WDT", machine.DEEPSLEEP_RESET: "DEEPSLEEP",
+                 machine.SOFT_RESET: "SOFT"}
+_rc = machine.reset_cause()
+print("reset cause:", _RESET_CAUSES.get(_rc, _rc))
 
 M5.begin()
 
@@ -317,6 +327,26 @@ class WebSocket:
 ws = None
 current_task = None
 
+# ── The spine handshake: version, clock, link ──────────────────────────────
+# The spine teaches us our own instinct version with IV: and the hour with
+# TIME:, and we announce both back in every BOOT: line. iv= is what lets a
+# RECONNECT skip the re-push: pushing calls swap_instinct, which restarts
+# run() and wipes every local it holds, so walking out of WiFi range and
+# back would otherwise cost the creature its running state.
+instinct_version = 0    # spine's version of the instinct we run (0 = seed)
+_pending_iv = None      # an IV: seen, not yet adopted by the swap it tags
+_clock_set = False      # has a TIME: landed since power-on?
+_connects = 0           # websocket connects this boot: 0 = the first
+_link_down_ms = None    # when the link dropped, to report how long it was out
+
+# The journal (matching creatures/tilt): every send() lands here with the
+# creature clock, and whatever has NOT reached the spine is replayed at the
+# next connect. Load-bearing now that a reconnect no longer restarts the
+# instinct — the body keeps running and keeps talking, so without this a WiFi
+# blip silently swallows everything it journalled during the outage.
+JOURNAL = []            # (t_ms, line) — UNSYNCED lines only
+JOURNAL_MAX = 400
+
 # ── The typed journal ──────────────────────────────────────────────────────
 # One stream, every entry naming its own kind, so the soul can tell its own
 # acts from the body's reports. LOG:/REFLECTION:/CRASH: are written here;
@@ -334,10 +364,25 @@ def _typed(msg):
     return "LOG: " + msg
 
 
-def send(msg):
+def send(msg, urgent=False):
+    """Write one line to the journal. This does NOT summon the soul, so it is
+    cheap — write what the moment deserves.
+
+    `urgent` is accepted for parity with the batch runtimes (creatures/tilt),
+    where it wakes a sleeping radio. This body is live-only: there is nothing
+    to wake, so it is a no-op here. Kept in the signature so instinct code
+    moves between the two families unchanged."""
+    msg = _typed(msg)
+    JOURNAL.append((time.ticks_ms(), msg))
+    if len(JOURNAL) > JOURNAL_MAX:
+        del JOURNAL[:JOURNAL_MAX // 4]
     try:
         if ws:
-            ws.send(_typed(msg))
+            ws.send(msg)
+            # Delivered — drop it again, so JOURNAL holds only the UNSYNCED
+            # lines its docstring claims. send() has no awaits, so the entry
+            # just appended is still the last one.
+            JOURNAL.pop()
     except Exception as e:
         print("send: error:", e)
 
@@ -345,7 +390,36 @@ def reflect(reason):
     """Ask the soul to think, and say WHY. Journalling never does this —
     send() only writes to the record; this is the one call that summons a
     reflection. Say what changed or what you cannot resolve."""
-    send("REFLECTION: " + str(reason))
+    send("REFLECTION: " + str(reason), urgent=True)
+
+
+async def _flush_journal(sock):
+    """Replay unsynced lines with their ORIGINAL timestamps, so the record says
+    when things happened rather than when the link came back.
+
+    Deliberately NO FLUSH-END: that token drives the spine's batch handshake,
+    which answers with NAP (spine.py _flush_ack) — and a NAP arriving here
+    would be exec'd as instinct code. Live runtimes replay and carry on.
+
+    A replayed REFLECTION: registers with the spine but does not schedule one
+    (the spine gates scheduling on the batch handshake), so if the outage
+    swallowed any asks, make ONE afterwards. That is also the right number: the
+    soul wants the situation now, not a queue of stale requests."""
+    n = asks = 0
+    while JOURNAL:
+        t_ms, line = JOURNAL[0]
+        sock.send("J:{}:{}".format(t_ms, line))
+        JOURNAL.pop(0)
+        n += 1
+        if line.startswith("REFLECTION:"):
+            asks += 1
+        if n % 20 == 0:
+            await asyncio.sleep_ms(50)   # don't starve the loop on big flushes
+    if n:
+        print("flushed {} journal lines ({} asks)".format(n, asks))
+    if asks:
+        reflect("the link was down: {} lines replayed, {} earlier request(s) "
+                "to think folded into this one".format(n, asks))
 
 
 INSTINCT_ENV = {
@@ -389,6 +463,10 @@ async def run():
 
 async def run_instinct(code):
     env = dict(INSTINCT_ENV)
+    # Which instinct am I? Compared against a version the creature stored for
+    # itself, this tells a REWRITE (version changed) from a re-push or a
+    # reconnect (identical). 0 = the seed, before any IV: arrived.
+    env["IV"] = instinct_version
     try:
         exec(code, env)
     except Exception as e:
@@ -453,11 +531,101 @@ async def heartbeat():
                 pass
 
 
+def _set_clock(msg):
+    """TIME:<unix_s>:<gmtoff_s> — the laptop's clock, via the spine. Sets the
+    RTC, which survives a reconnect but not a power-off; every connect
+    re-syncs. This is what lets the creature journal the hour instead of a
+    boot-relative t+Nm."""
+    global _clock_set
+    try:
+        u, off = msg[5:].split(":")
+        # The epoch is a BUILD property, not a given: MicroPython ports use
+        # 2000-01-01, others (and some M5 builds) the unix 1970 epoch.
+        # Guessing wrong shifts the DATE by exactly 10957 days — a whole
+        # number, so hour:minute still read correctly while the YEAR lands in
+        # 1996, and anything gated on localtime()[0] >= 2020 fails silently.
+        # Detect it instead of assuming.
+        epoch_off = 946684800 if time.gmtime(0)[0] == 2000 else 0
+        local = int(u) + int(off) - epoch_off
+        tm = time.gmtime(local)
+        machine.RTC().datetime((tm[0], tm[1], tm[2], tm[6], tm[3], tm[4], tm[5], 0))
+        _clock_set = True
+        print("clock: {:02d}:{:02d}".format(tm[3], tm[4]))
+    except Exception as e:
+        print("clock: set failed:", e)
+
+
+def _boot_line(reason, down_s=None):
+    # The spine reads mode=, iv=, uptime= and keepalive= out of this line, and
+    # detects the announce with startswith("BOOT:") — so no prefix, and the
+    # clock token goes LAST. A missing mode= silently costs us the clock (the
+    # spine gates TIME: on it, since older runtimes would exec it as code).
+    clock = (" clock={:02d}:{:02d}".format(*time.localtime()[3:5])
+             if _clock_set else "")
+    return ("BOOT: cause={} uptime={}s vbat={}mV vbus={}mV charging={} "
+            "mode={} keepalive={} iv={} wake={}".format(
+                _RESET_CAUSES.get(_rc, _rc), time.ticks_ms() // 1000,
+                M5.Power.getBatteryVoltage(), M5.Power.getVBUSVoltage(),
+                M5.Power.isCharging(),
+                "live", HEARTBEAT_INTERVAL, instinct_version, reason)
+            + ("" if down_s is None else " down={}s".format(down_s))
+            + clock)
+
+
+async def _handle_msg(msg):
+    """One spine message: session bookkeeping, an IV/TIME tag, or instinct."""
+    global last_session_id, instinct_version, _pending_iv
+    if msg == "NAP":
+        # This runtime never sleeps, so a NAP is not for us — but it must be
+        # RECOGNISED, because anything unrecognised is exec'd as instinct code
+        # and would kill the running creature with a NameError.
+        print("ignoring NAP (live runtime)")
+        return
+    if msg.startswith("SESSION:"):
+        sid = msg[len("SESSION:"):]
+        if last_session_id is not None and last_session_id != sid:
+            await session_start_cleanup()
+            instinct_version = 0        # new session: our instinct is stale
+        last_session_id = sid
+        print("session: {}".format(sid))
+        return
+    if msg.startswith("IV:"):
+        _pending_iv = int(msg[3:])
+        return
+    if msg.startswith("TIME:"):
+        _set_clock(msg)
+        return
+    # Adopt the version BEFORE the swap: run_instinct puts it in the instinct
+    # scope, and a creature reading its own version one behind cannot tell a
+    # real rewrite from a re-push of the code it is already running.
+    if _pending_iv is not None:
+        instinct_version = _pending_iv
+        _pending_iv = None
+    await swap_instinct(msg)
+
+
 async def ws_listener():
-    global ws, last_session_id
+    global ws, _connects
     print("ws: connecting to {}:{}".format(SPINE_HOST, SPINE_PORT))
     ws = WebSocket.connect(SPINE_HOST, SPINE_PORT)
     print("ws: connected")
+    # Announce on EVERY connect. wake= says why this one happened, because
+    # uptime= alone makes a reconnect read as a power-on, and cause= is frozen
+    # at the last real reset.
+    if _connects == 0:
+        ws.send(_boot_line("poweron"))
+    else:
+        # ticks_ms is a WRAPPING counter (~12.4 days on ESP32) — plain
+        # subtraction goes hugely negative across the wrap. ticks_diff is the
+        # only correct way to take a difference of two of them.
+        down = (0 if _link_down_ms is None
+                else max(0, time.ticks_diff(time.ticks_ms(), _link_down_ms) // 1000))
+        ws.send(_boot_line("reconnect", down_s=down))
+    _connects += 1
+    # Anything journalled while the link was down goes out now, timestamped
+    # when it happened. Must follow the BOOT line: the spine reads BOOT out of
+    # the first frame, and a J: arriving first would cost us the clock.
+    await _flush_journal(ws)
     while True:
         try:
             msg = await ws.recv()
@@ -467,14 +635,7 @@ async def ws_listener():
         if msg is None:
             print("ws: closed by server")
             break
-        if msg.startswith("SESSION:"):
-            sid = msg[len("SESSION:"):]
-            if last_session_id is not None and last_session_id != sid:
-                await session_start_cleanup()
-            last_session_id = sid
-            print("session: {}".format(sid))
-            continue
-        await swap_instinct(msg)
+        await _handle_msg(msg)
 
 
 async def main():
@@ -485,6 +646,7 @@ async def main():
             await ws_listener()
         except Exception as e:
             print("ws: error:", e)
+        globals()["_link_down_ms"] = time.ticks_ms()
         print("ws: reconnect in 3s")
         await asyncio.sleep(3)
 

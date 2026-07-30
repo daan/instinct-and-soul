@@ -62,11 +62,85 @@ def _spark(values, width=24):
     return "".join(SPARK[min(7, int((v - lo) / span * 7.999))] for v in pts)
 
 
+def _radar(latest, width, frame_w=32):
+    """A linear radar: the warm shape's HORIZONTAL extent, drawn across the
+    frame. Left edge is camera column 0, right edge is column frame_w-1, and
+    the bar is the blob's bounding box from x0 to x1 with its centroid marked.
+
+    Why the extent and not just the centroid: a centroid moving left is
+    ambiguous — the shape may have travelled, or it may have grown on its left
+    side. Seeing the span slide (travel) versus widen (approach, or a second
+    warm thing joining) separates those, which is exactly the read needed to
+    call left/right MOVEMENT rather than left/right position.
+
+    Fed by /probe/blob_x0 and /probe/blob_x1, which the device emits only while
+    a shape is present — so absence here is real absence, not a dropped packet.
+    """
+    area = latest.get("area", (0, 0.0))[1]
+    x0 = latest.get("blob_x0")
+    x1 = latest.get("blob_x1")
+    cx = latest.get("cx")
+    ruler = Text()
+    ruler.append("0", style="dim")
+    ruler.append("─" * max(0, width - 4), style="dim")
+    ruler.append("{:>3}".format(frame_w - 1), style="dim")
+
+    if not area or x0 is None or x1 is None:
+        body = Text("·" * width, style="dim")
+        out = Text()
+        out.append_text(body)
+        out.append("\n")
+        out.append_text(ruler)
+        out.append("\n")
+        out.append("no warm shape in view", style="dim")
+        return out
+
+    def col(fx):
+        f = fx / float(frame_w - 1)
+        f = 0.0 if f < 0 else (1.0 if f > 1 else f)
+        return int(round(f * (width - 1)))
+
+    a, b = col(x0[1]), col(x1[1])
+    if a > b:
+        a, b = b, a
+    cxc = col(cx[1]) if cx is not None else None
+
+    bar = Text()
+    for i in range(width):
+        if cxc is not None and i == cxc:
+            bar.append("┃", style="bold cyan")
+        elif a <= i <= b:
+            bar.append("█", style="bold yellow")
+        else:
+            bar.append("·", style="dim")
+
+    span = x1[1] - x0[1] + 1
+    read = Text()
+    read.append("x {:.0f}–{:.0f}".format(x0[1], x1[1]))
+    read.append("   span {:.0f}px".format(span), style="yellow")
+    if cx is not None:
+        read.append("   cx {:.1f}".format(cx[1]), style="cyan")
+    read.append("   area {:.0f}px".format(area), style="dim")
+    tof = latest.get("tof_mm")
+    if tof is not None:
+        read.append(
+            "   tof {}".format("no echo" if tof[1] <= 0 else "{:.0f}mm".format(tof[1])),
+            style="dim")
+
+    out = Text()
+    out.append_text(bar)
+    out.append("\n")
+    out.append_text(ruler)
+    out.append("\n")
+    out.append_text(read)
+    return out
+
+
 EVENT_STYLES = {
     "touch": "cyan", "familiar": "green", "familiar_new": "yellow",
     "recognized": "bold green", "reunify": "magenta", "state": "blue",
     "turned": "blue", "startle": "bold red", "attempt": "magenta",
-    "strike": "bold cyan",
+    "strike": "bold cyan", "warm": "bold yellow",
 }
 
 
@@ -87,6 +161,7 @@ def main():
     events = deque(maxlen=18)   # (t_ms, kind, payload)
     n_rx = [0]
     last_rx = [None]
+    console = Console()
 
     def render():
         tbl = Table(title=None, expand=True, show_edge=False, pad_edge=False)
@@ -102,13 +177,19 @@ def main():
             ev.append(f"{kind:<13}", style=EVENT_STYLES.get(kind, "white"))
             ev.append(f" {payload}\n")
         age = "" if last_rx[0] is None else f" · last packet {time.time()-last_rx[0]:.0f}s ago"
-        return Group(
-            Panel(tbl, title=f"levels  (:{args.port} · {n_rx[0]} pkts{age})"),
-            Panel(ev or Text("waiting for organ events…", style="dim"),
-                  title="events"),
-        )
+        panels = []
+        # The radar goes FIRST — it is the one panel you watch rather than read,
+        # and it is only shown once a body has actually sent an extent, so it
+        # never occupies space for creatures that have no warm-shape sense.
+        if "blob_x0" in probes or "blob_x1" in probes:
+            radar_w = max(16, min(72, (console.width or 80) - 10))
+            panels.append(Panel(_radar(latest, radar_w),
+                                title="radar  (warm-shape extent across the frame)"))
+        panels.append(Panel(tbl, title=f"levels  (:{args.port} · {n_rx[0]} pkts{age})"))
+        panels.append(Panel(ev or Text("waiting for organ events…", style="dim"),
+                            title="events"))
+        return Group(*panels)
 
-    console = Console()
     with Live(render(), console=console, refresh_per_second=8) as live:
         while True:
             try:

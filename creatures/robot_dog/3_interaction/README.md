@@ -15,6 +15,39 @@ It can flee the hand — so being picked up stops being the default
 condition and becomes a dramatic event: **capture**. The whole pebble
 grammar survives as one scene inside a larger play.
 
+## Status — what 1_action settled, 2026-07-30
+
+The transport vocabulary now EXISTS and is gentle enough to run near a
+hand. Four primitives, all continuous-until-stopped, all at amplitude 30°
+/ period 1000 ms / stance_duty 0.65:
+
+    trot · back · turn cw · turn ccw          (+ stop, + turnto for an angle)
+
+Three findings from getting there, all of which constrain this stage:
+
+1. **The camera is mounted UPRIGHT, so the CoM is high and the chassis is
+   a tall inverted pendulum.** The previously validated 40°/500 ms stride
+   tips it over. Tip threshold is `tan θ = half_track / h`; the feet cannot
+   move sideways, so this is a hard geometric limit, and lowering the
+   camera buys more than any gait tuning. **This caps stride amplitude,
+   which caps mm/cycle, which caps how fast this creature can ever
+   approach.** `pace` in the locomotion API below must be bounded by it —
+   an unbounded `approach(pace)` is a way to fall over.
+2. **Smoothing the stride made tipping worse.** A cosine reversal has zero
+   velocity at the extremes, which is the same thing as DWELLING there
+   (46% of the cycle beyond 80% of amplitude, vs 23% for a straight ramp)
+   — long enough for the mass to go over. Period, not waveform, is the
+   gentleness lever: leg acceleration falls as 1/period². Recorded in
+   `1_action/tune.py` so it does not get re-tried.
+3. **Turning needs the feet to scrub sideways, so it fights friction.**
+   A grippy surface improves the trot and degrades the turn, and turning
+   is the most tip-prone move in the vocabulary. Any `orbit()` or `face()`
+   built on it inherits both properties.
+
+And the honest limit that shapes the token vocabulary: **the body knows
+that it turns, not how much.** deg/cycle is unmeasured (item 2 below), so
+no attribution-corrected turn token can be minted yet.
+
 ## The body, honestly
 
 This dog is barely more than a rover. Its whole transport vocabulary:
@@ -299,16 +332,24 @@ function exists. Both need the session record (P1).
 
 ## What we are missing (measure before this stage can run)
 
-1. **Walking speed** — mm/s (equivalently mm/gait-cycle) at the
-   validated trot (amp 40, period 500 ms, duty 0.65), forward AND
-   backward, on the actual arena surface. This is the efference model;
-   every `HUMAN_*` token and every act's BODY line is unmeasurable
-   without it. Method: trot at a fixed wall, regress ToF against cycle
-   count.
-2. **Turn rate** — deg/cycle for cw and ccw. The turning gait itself
-   does not exist yet (1_action validated only the straight trot;
-   differential stride amplitude L/R is the candidate). Measure by
-   integrating gyro-z over commanded cycles.
+1. **Walking speed** — mm/s (equivalently mm/gait-cycle) at the current
+   validated trot (**amp 30, period 1000 ms, duty 0.65** — the gentle
+   envelope the tall chassis forced, 2026-07-30), forward AND backward,
+   on the actual arena surface. This is the efference model; every
+   `HUMAN_*` token and every act's BODY line is unmeasurable without it.
+   Method: trot at a fixed wall, regress ToF against cycle count —
+   `Legs.cycles()` and the seed's paired `nose X -> Y` journal lines are
+   already emitting exactly this data, so a session of the seed IS the
+   measurement run.
+2. **Turn rate** — deg/cycle for cw and ccw. The turning gait now EXISTS
+   (differential stride amplitude L/R, in `Legs.turn()` and the tuner's
+   `turn`/`rotate`/`turnto`) — what is missing is only the calibration.
+   Measure by integrating gyro-z over commanded cycles; the tuner's
+   `turnto` already does that integration and reports yaw, coast and
+   error, so it is the instrument. Note the surface dependence is much
+   stronger here than for the trot: turning works by scrubbing the feet
+   sideways, so deg/cycle on rubber and on laminate are different
+   numbers and both are worth having.
 3. **ToF under gait** — the trot pitches the nose; measure reading
    variance against a fixed target while walking. Sets smoothing and
    whether mid-stride readings are usable at all or only between
@@ -326,24 +367,53 @@ function exists. Both need the session record (P1).
 7. **Power** — servos + WiFi + thermal on one battery; the known
    StickS3 brownout gotcha (keep vbat > 3.7 V; gate on VBUS not
    isCharging).
-8. **The merge itself** — one main.py: HAT on SoftI2C GPIO0/8, senses
-   on Grove bus 0. Buses coexist on paper; servo EMI on the thermal
-   bus is untested.
+8. **The merge itself** — DONE in software (one main.py: HAT on SoftI2C
+   GPIO0/8, senses on Grove bus 0, plus the Legs organ). Still untested
+   on hardware: **servo EMI on the thermal bus**. This is the first thing
+   to watch when the stage boots — a thermal frame that goes to noise or
+   an I²C error storm only when the legs move is the signature. Nothing
+   downstream is trustworthy until it is ruled out.
+11. **Tipping margin** — NEW, and it bounds everything above. Measure the
+   half-track (lateral distance between feet) and the CoM height with the
+   camera fitted; `tan θ = half_track / h` is the static tip threshold and
+   `g·half_track/h` the lateral acceleration that goes over. The runtime's
+   `TIP_G` guard is currently a guess at 0.55 g and should be set from that
+   measurement. This caps stride amplitude, which caps mm/cycle, which caps
+   approach speed — so it is upstream of item 1, not parallel to it.
 9. **Disengagement operationalization** — the constitution's "let
    them leave" rule needs a measured definition (e.g. no
    human-attributed token for N s, twice in a row after my bids).
 10. **On-device recording (P1)** — token streams must be replayable
     (movement 1) or neither anchor above is computable.
 
-## Files in this stage (when it runs)
+## Files in this stage
 
-    main.py            1_action servo helpers + 2_perception pump + the
-                       efference model + token emission (translation layer)
-    lib/               drivers + the Proxemics organ (copied, per the
+Runnable as of 2026-07-30 (`flash creatures/robot_dog/3_interaction --wifi
+<profile>` then `spine creatures/robot_dog/3_interaction`; `stetho` beside it
+for the organ stream, `tune creatures/robot_dog/3_interaction` for gait
+bring-up and the two calibrations).
+
+    main.py            1_action servo helpers + 2_perception pump + the LEGS
+                       ORGAN (gait as runtime state: command a mode, read
+                       cycles/since_still back; gentle envelope and the tip
+                       guard live here, where an instinct cannot remove them)
+    lib/               vl53l0x_nb.py + stethoscope.py (copied, per the
                        no-sharing convention)
     creature.toml      device = "sticks3"
     constitution.md    fixed layer — the soul may not revise
     character.md       given layer — swap to run the meta-experiment
-    system_prompt.md   body interface + judgment criteria + reflection form
+    embodiment.md      body interface + judgment criteria + reflection form
     seed_experience.md what the body already knows about itself
-    seed_instinct.py   Braitenberg 2a on the thermal gradient
+    seed_instinct.py   Braitenberg 2a on the thermal gradient, with the
+                       efference gate (move, stop, look) and the paired
+                       cycles/range journal lines that feed items 1 and 2
+    recipes.py         gait recipes for the tuner
+    tune.py            the tuner: trot/back/turn/turnto/autotrim/toflog
+
+**Not yet built, and deliberately so** — the Proxemics organ, the
+efference-corrected `HUMAN_*` vocabulary, and the ACT# grammar of the design
+above. All three are blocked on measurements 1, 2 and 11, and building them
+first would mean minting tokens the body cannot honestly support.
+`Legs.cycles()` / `Legs.since_still_ms()` are the hooks they will attach to.
+The seed reads raw percepts and says what it sees, which is the most it can
+claim today.

@@ -1,8 +1,14 @@
 """
-tune.py — interactive gait tuner for the puppyc (M5StickS3 + 4-servo hat).
+tune.py — gait and behaviour tuner for robot_dog 3_interaction
+(M5StickS3 + PuppyC hat + thermal camera + ToF).
 
 Run:
-    tune creatures/puppyc
+    tune creatures/robot_dog/3_interaction
+
+The gait commands drive the legs directly through set_leg/set_all, exactly as
+in 1_action. The BEHAVIOUR commands (perc / find / face / hand / keep) go through the Legs
+organ and the Thermal / ToF organs instead — the same surface a creature
+writes against — so what you tune here is what the creature will inherit.
 
 Commands:
   center                              — all legs to 90
@@ -30,6 +36,49 @@ Commands:
                                         coast and the error. Relative yaw only
                                         — chained turns drift.
   stop                                — centre the legs and hold
+
+  # behaviours (blob + ToF, closed loop). All of them move-then-look: a
+  # reading taken mid-stride is not news about the world.
+  perc [period_ms]                    — both senses on one line, AT REST, no
+                                        motion. The instrument for the
+                                        unmeasured zone thresholds and the
+                                        blob-area-vs-distance curve.
+  find [max_mm] [pace%] [deg] [cw|ccw]
+                                      — sweep in place until a warm shape is
+                                        both visible AND within max_mm
+                                        (default 500). Turns in short phrases
+                                        and looks between them; integrates
+                                        gyro-z so it gives up after deg
+                                        instead of spinning forever.
+  face [band_px] [pace%] [cw|ccw]     — TURNS ONLY, no translation: rotate in
+                                        place to hold the shape within band_px
+                                        of frame centre. The bearing half of
+                                        `keep` on its own, so a bearing failure
+                                        is visible separately from a range
+                                        failure. Works out its own camera
+                                        handedness (turns, checks whether the
+                                        error shrank, flips and says so if it
+                                        grew) and reports px-per-degree from
+                                        the pixels removed vs the gyro yaw —
+                                        which is the camera's angular scale AND
+                                        deg/cycle, neither measured before.
+  hand [target_mm] [band] [pace%]     — fore/aft only, on the NOSE BEAM: back
+                                        off when the hand comes closer than
+                                        target (default 100mm), follow when it
+                                        goes away, hold in between. ToF-only on
+                                        purpose — at hand distance the warm
+                                        shape saturates the frame, so its
+                                        centroid cannot say "which way" and a
+                                        facing step would just spin. The camera
+                                        is used only to tell "nothing there"
+                                        from "pressed against my nose" when the
+                                        beam returns no echo.
+  keep [target_mm] [band] [pace%]     — hold a distance from the warm shape:
+                                        face it, close if beyond target+band,
+                                        open if inside target-band. Every
+                                        phrase logs cycles beside range
+                                        before/after — those pairs are the
+                                        mm/cycle measurement.
   smooth [on|off]                     — gait waveform. OFF (default): the
                                         triangle wave. ON: cosine stance and
                                         swing, zero velocity at the reversals.
@@ -87,11 +136,30 @@ PLACEHOLDER = (
     "back [amp] [ms] [duty%] | rotate <cw|ccw> [s] [amp] [ms] | "
     "turn <cw|ccw> [amp] [ms] | turnto <cw|ccw> [degrees] [amp] [ms] | "
     "circle <cw|ccw> [amp] [ms] | "
+    "perc [ms] | find [max_mm] [pace] [deg] [cw|ccw] | "
+    "face [band_px] [pace] [cw|ccw] | "
+    "hand [target_mm] [band] [pace] | keep [target_mm] [band] [pace] | "
     "smooth [on|off] | "
     "walk [amp] [ms] [duty%] | pronk [amp] [ms] [duty%] | wave [leg] | "
     "tone [freq] [ms] | toflog | theremin [min_mm] [max_mm] | imulog | miclog | "
     "autotrim | trimdump"
 )
+
+
+def turn_sign(word):
+    """Map the word a human types to the SIGN the gait recipes expect.
+
+    Determined empirically on the hardware, 2026-07-30: SIGN=+1 drives the LEFT
+    legs propulsively forward and the RIGHT legs backward, which tank-steers the
+    body to its right — i.e. CLOCKWISE seen from above. The code originally
+    labelled that +1 as "ccw", so every turn command was mirrored: asking for cw
+    turned ccw and vice versa.
+
+    Keep this the ONLY place the word becomes a sign. If the physical convention
+    ever needs flipping again (a rewired hat, a mirrored leg), flip it here and
+    every turn command follows.
+    """
+    return -1 if str(word).lower() == "ccw" else 1
 
 
 def clamp_angle(v):
@@ -116,7 +184,7 @@ def clamp_duty(v):
 
 class PuppyCTuner(TuneAppBase):
     INITIAL_INSTINCT = INSTINCT_IDLE
-    STATUS_LABEL = "puppyc"
+    STATUS_LABEL = "3_interaction"
 
     # Session default for every gait recipe. OFF (triangle) — see the note in
     # the module docstring: zero velocity at a reversal necessarily means
@@ -265,7 +333,7 @@ class PuppyCTuner(TuneAppBase):
                     self.log_msg("usage: rotate <cw|ccw> [seconds] [amp] [ms]",
                                  style="yellow")
                     return
-                sign = 1 if parts[1].lower() == "ccw" else -1
+                sign = turn_sign(parts[1])
                 seconds = max(1, min(30, int(parts[2]))) if len(parts) > 2 else 4
                 # amp/period used to be hardcoded at the trot's 40/500, so the
                 # single most violent move on this body was also the only one
@@ -295,7 +363,7 @@ class PuppyCTuner(TuneAppBase):
                 if len(parts) < 2 or parts[1].lower() not in ("cw", "ccw"):
                     self.log_msg("usage: turn <cw|ccw> [amp] [ms]", style="yellow")
                     return
-                sign = 1 if parts[1].lower() == "ccw" else -1
+                sign = turn_sign(parts[1])
                 amp = clamp_amp(parts[2]) if len(parts) > 2 else 30
                 period = clamp_period(parts[3]) if len(parts) > 3 else 1000
                 code = format_recipe(RECIPES["turn"], sign=sign, amp=amp,
@@ -310,7 +378,7 @@ class PuppyCTuner(TuneAppBase):
                     self.log_msg("usage: turnto <cw|ccw> [degrees] [amp] [ms]",
                                  style="yellow")
                     return
-                sign = 1 if parts[1].lower() == "ccw" else -1
+                sign = turn_sign(parts[1])
                 target_deg = max(10, min(720, int(parts[2]))) if len(parts) > 2 else 180
                 amp = clamp_amp(parts[3]) if len(parts) > 3 else 30
                 period = clamp_period(parts[4]) if len(parts) > 4 else 1000
@@ -327,6 +395,61 @@ class PuppyCTuner(TuneAppBase):
                 self.log_msg("turnto {} target={}° amp={} period={}ms smooth={} timeout={}s".format(
                     parts[1].lower(), target_deg, amp, period, self.smooth,
                     timeout_s), style="cyan")
+
+            elif cmd == "perc":
+                period = max(100, min(5000, int(parts[1]))) if len(parts) > 1 else 500
+                code = format_recipe(RECIPES["perc"], period_ms=period)
+                self.log_msg("perc: blob + tof at rest every {}ms — no motion"
+                             .format(period), style="cyan")
+
+            elif cmd == "find":
+                max_mm = max(50, min(2000, int(parts[1]))) if len(parts) > 1 else 500
+                pace = max(35, min(100, int(parts[2]))) if len(parts) > 2 else 60
+                sweep = max(30, min(1080, int(parts[3]))) if len(parts) > 3 else 360
+                direction = 1
+                if len(parts) > 4 and parts[4].lower() in ("cw", "ccw"):
+                    direction = 1 if parts[4].lower() == "ccw" else -1
+                # find/face hand a WORD to Legs.turn(), and the organ owns that
+                # word's meaning — so no sign flip here; see turn_sign() and
+                # the organ's own note.
+                code = format_recipe(RECIPES["find"], max_mm=max_mm, pace=pace,
+                                     sweep_deg=sweep, dir=direction)
+                self.log_msg("find: sweep {} for a warm shape within {}mm "
+                             "(pace {}%, give up after {}°)".format(
+                                 "ccw" if direction > 0 else "cw", max_mm,
+                                 pace, sweep), style="cyan")
+
+            elif cmd == "face":
+                band = max(1, min(16, int(parts[1]))) if len(parts) > 1 else 3
+                pace = max(35, min(100, int(parts[2]))) if len(parts) > 2 else 60
+                direction = 1
+                if len(parts) > 3 and parts[3].lower() in ("cw", "ccw"):
+                    direction = 1 if parts[3].lower() == "ccw" else -1
+                code = format_recipe(RECIPES["face"], band_px=band, pace=pace,
+                                     dir=direction)
+                self.log_msg("face: hold the shape within +/-{}px of centre, "
+                             "pace {}% — turns only, and works out its own "
+                             "camera handedness".format(band, pace), style="cyan")
+
+            elif cmd == "hand":
+                target = max(40, min(1500, int(parts[1]))) if len(parts) > 1 else 100
+                band = max(5, min(400, int(parts[2]))) if len(parts) > 2 else 20
+                pace = max(35, min(100, int(parts[3]))) if len(parts) > 3 else 60
+                code = format_recipe(RECIPES["hand"], target_mm=target,
+                                     band_mm=band, pace=pace)
+                self.log_msg("hand: follow/retreat to hold {}mm +/-{}mm at pace "
+                             "{}% (nose beam only)".format(target, band, pace),
+                             style="cyan")
+
+            elif cmd == "keep":
+                target = max(60, min(1500, int(parts[1]))) if len(parts) > 1 else 350
+                band = max(10, min(400, int(parts[2]))) if len(parts) > 2 else 60
+                pace = max(35, min(100, int(parts[3]))) if len(parts) > 3 else 70
+                code = format_recipe(RECIPES["keep"], target_mm=target,
+                                     band_mm=band, pace=pace)
+                self.log_msg("keep: hold {}mm +/-{}mm at pace {}% — every phrase "
+                             "logs an mm/cycle pair".format(target, band, pace),
+                             style="cyan")
 
             elif cmd == "smooth":
                 # A session-level knob, not a per-command argument: you want to

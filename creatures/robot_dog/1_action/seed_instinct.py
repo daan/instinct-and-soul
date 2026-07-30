@@ -7,10 +7,16 @@ to find out: whether the gait keeps the body upright."""
 
 
 async def run():
-    AMP = 40
-    PERIOD_MS = 500
+    # Measured 2026-07-30 on this body, with the camera mounted upright: the
+    # old 40/500 tips it. Peak leg acceleration scales as 1/period^2, and the
+    # tall camera makes the chassis an inverted pendulum that a hard, fast
+    # stride topples. 30/1000 walks and stays up.
+    AMP = 30
+    PERIOD_MS = 1000
     DUTY = 0.65
     DT_MS = 20
+    RAMP_CYCLES = 2.0    # ease the amplitude in — the first stride from a dead
+                         # stop was the most violent event of a run
     TIPPED = 0.55        # tilt magnitude that means the trot is failing
 
     def phase(t):
@@ -28,8 +34,9 @@ async def run():
     upright = True
     while True:
         t = (i * DT_MS / PERIOD_MS)
-        a = phase(t)
-        b = phase(t + 0.5)
+        g = min(1.0, t / RAMP_CYCLES)
+        a = g * phase(t)
+        b = g * phase(t + 0.5)
         set_all(90 + a, 90 + b, 90 + b, 90 + a)
         if i % 50 == 0:
             ax, ay, az = Imu.getAccel()

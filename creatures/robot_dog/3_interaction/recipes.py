@@ -404,24 +404,21 @@ async def run():
 """,
     },
     "toflog": {
-        # Stream VL53L0X distance readings. Hardware verification for the ToF
-        # — does NOT touch servos or speaker. Uses the driver's non-blocking
-        # API: blocking .range raises OSError under concurrent asyncio/WiFi
-        # load, async polling of reading_available() does not.
+        # Stream the ToF percept. In this stage the perception pump OWNS the
+        # sensor, so an instinct must not drive it — start_range_request() from
+        # here would fight the pump for the Grove bus. Read the organ instead;
+        # this verifies the pump as well as the sensor.
         "args": [],
         "code": """
 async def run():
-    if tof is None:
-        send("toflog: sensor not available (check VL53L0X wiring)")
+    if ToF.read_distance_mm() is None:
+        send("toflog: no ToF (check VL53L0X wiring)")
         while True:
             await asyncio.sleep(5)
-    send("toflog: streaming distance")
+    send("toflog: streaming the ToF percept")
     while True:
-        tof.start_range_request()
-        while not tof.reading_available():
-            await asyncio.sleep_ms(5)
-        d = tof.get_range_value()
-        send("tof distance={} mm".format(d))
+        send("tof distance={{}} mm age={{}} ms".format(
+            ToF.read_distance_mm(), ToF.age_ms()))
         await asyncio.sleep_ms(100)
 """,
     },
@@ -433,7 +430,7 @@ async def run():
         "args": [("min_mm", int, 30), ("max_mm", int, 600)],
         "code": """
 async def run():
-    if read_distance_mm() is None:
+    if ToF.read_distance_mm() is None:
         send("theremin: ToF not available")
         while True:
             await asyncio.sleep(5)
@@ -446,7 +443,7 @@ async def run():
     send("theremin {min_mm}..{max_mm}mm -> 200..1500Hz")
     try:
         while True:
-            d = read_distance_mm()
+            d = ToF.read_distance_mm()
             if d is None or d <= 0 or d > MAX_MM:
                 await asyncio.sleep_ms(40)
                 continue
@@ -522,10 +519,487 @@ async def run():
         "args": [],
         "code": """
 async def run():
+    Legs.stop()
     center_all()
     send("stopped")
     while True:
         await asyncio.sleep(5)
+""",
+    },
+
+    # ── Behaviours (blob + ToF) ────────────────────────────────────────────
+    # These are the first recipes that CLOSE THE LOOP between the senses and
+    # the legs, so three shared rules apply to all of them, and to anything
+    # added beside them:
+    #
+    #   MOVE, THEN LOOK. While the legs run, the thermal centroid sloshes and
+    #   the nose beam pitches with every stride. A reading taken mid-phrase is
+    #   not news about the world. Every behaviour below stops, waits for
+    #   Legs.since_still_ms() to pass SETTLE_MS, and only then reads. This
+    #   makes them dog-like rather than smooth, and that is the honest shape.
+    #
+    #   THE TWO SENSES DISAGREE, AND THAT IS DATA. The camera is wide and only
+    #   ordinal; the beam is metric but narrow. "Blob present, no echo" is the
+    #   normal case at an angle, not a fault — it is reported, never averaged
+    #   away or silently treated as "far".
+    #
+    #   RANGES ARE ROUNDED-OFF GUESSES. The mm thresholds here are drafted for
+    #   a tabletop and a hand and have NOT been measured on this body (README
+    #   missing item 6). They are tuner arguments precisely so you can find the
+    #   real ones.
+
+    "perc": {
+        # The measurement instrument for the missing zone thresholds and the
+        # blob-area-vs-distance curve: both senses on one line, at rest, so the
+        # pairs can be regressed later. Put a hand at a known distance, read
+        # the line, move the hand. No motion at all — the legs never run, so
+        # nothing contaminates the readings.
+        "args": [("period_ms", int, 500)],
+        "code": """
+async def run():
+    Legs.stop()
+    center_all()
+    send("perc: blob + tof at rest, every {period_ms}ms — no motion")
+    while True:
+        b = Thermal.blob()
+        mm = ToF.read_distance_mm()
+        if b["present"]:
+            send("perc present area={{}} exc={{:.1f}} cx={{:.1f}} cy={{:.1f}} "
+                 "amb={{:.1f}} tof={{}} tof_age={{}} blob_age={{}}".format(
+                     b["area"], b["excess_c"], b["cx"], b["cy"], b["ambient_c"],
+                     mm, ToF.age_ms(), b["age_ms"]))
+        else:
+            send("perc absent amb={{:.1f}} delta={{:.1f}} tof={{}}".format(
+                b["ambient_c"], Thermal.delta(), mm))
+        await asyncio.sleep_ms({period_ms})
+""",
+    },
+
+    "find": {
+        # Sweep in place until a warm shape is BOTH visible and within range.
+        # Turns in short phrases and looks between them, because a reading
+        # taken while turning is worthless (see the shared rules above).
+        #
+        # It also integrates gyro-z through each phrase so it knows roughly how
+        # far it has swept, and gives up after sweep_deg rather than spinning
+        # forever. That yaw figure is honest but rough: the bias is sampled
+        # only briefly and there is no compass to correct against.
+        "args": [("max_mm", int, 500), ("pace", int, 60), ("sweep_deg", int, 360),
+                 ("dir", int, 1)],
+        "code": """
+async def run():
+    MAX_MM = {max_mm}
+    PACE = {pace} / 100.0
+    SWEEP_DEG = {sweep_deg}
+    D = "ccw" if {dir} > 0 else "cw"
+    SETTLE_MS = 400
+    # Short enough not to sweep straight past a shape, but it MUST outlast the
+    # organ's soft-start ramp (GAIT_RAMP_CYCLES) or the phrase ends before the
+    # stride reaches full amplitude and the dog only twitches.
+    PHRASE_CYCLES = 1.0
+
+    Legs.stop()
+    center_all()
+    await asyncio.sleep_ms(600)
+
+    # gyro-z bias, sampled at rest. Without this the yaw estimate drifts one
+    # way regardless of which way we turn.
+    bias = 0.0
+    for _ in range(25):
+        _gx, _gy, gz = Imu.getGyro()
+        bias += gz
+        await asyncio.sleep_ms(20)
+    bias /= 25.0
+    send("find: sweeping {{}} for a warm shape within {{}}mm "
+         "(gz bias {{:.2f}} deg/s)".format(D, MAX_MM, bias))
+
+    async def look():
+        Legs.stop()
+        while Legs.since_still_ms() < SETTLE_MS:
+            await asyncio.sleep_ms(50)
+        return Thermal.blob(), ToF.read_distance_mm()
+
+    yaw = 0.0
+    while True:
+        b, mm = await look()
+        if b["present"]:
+            if mm is not None and 0 < mm <= MAX_MM:
+                send("find: FOUND at tof={{}}mm area={{}} cx={{:.1f}} "
+                     "after ~{{:.0f}} deg".format(mm, b["area"], b["cx"], yaw))
+                Legs.stop()
+                center_all()
+                while True:
+                    await asyncio.sleep(5)
+            elif mm is None or mm <= 0:
+                # The wide sense sees it, the narrow one does not. Expected at
+                # an angle — keep turning to bring it onto the beam.
+                send("find: shape at cx={{:.1f}} area={{}} but no echo — "
+                     "turning it onto the beam (~{{:.0f}} deg)".format(
+                         b["cx"], b["area"], yaw))
+            else:
+                send("find: shape at {{}}mm, beyond {{}} — keeping on "
+                     "(~{{:.0f}} deg)".format(mm, MAX_MM, yaw))
+        else:
+            send("find: nothing warm (~{{:.0f}} deg swept)".format(yaw))
+
+        if abs(yaw) >= SWEEP_DEG:
+            send("find: swept ~{{:.0f}} deg and found nothing within {{}}mm — "
+                 "stopping".format(yaw, MAX_MM))
+            Legs.stop()
+            center_all()
+            while True:
+                await asyncio.sleep(5)
+
+        # one turning phrase, integrating gyro-z as we go
+        Legs.turn(D, PACE)
+        last = time.ticks_ms()
+        while Legs.cycles() < PHRASE_CYCLES:
+            if Legs.tipped():
+                send("find: went over — stopping the sweep")
+                return
+            await asyncio.sleep_ms(20)
+            now = time.ticks_ms()
+            _gx, _gy, gz = Imu.getGyro()
+            yaw += (gz - bias) * (time.ticks_diff(now, last) / 1000.0)
+            last = now
+        Legs.stop()
+""",
+    },
+
+    "face": {
+        # Rotate in place to hold the warm shape at frame centre. NO
+        # translation ever — the bearing half of `keep`, on its own, so that
+        # "can it find the bearing" fails separately from "can it hold a
+        # range". Tangled together they are hard to tell apart.
+        #
+        # It will never look as smooth as `turn`, and that is deliberate: it
+        # must STOP to read, because a centroid measured mid-stride is partly a
+        # report of its own legs (the efference gate). Move, stop, look. What
+        # it can avoid is being needlessly rough, which means two things:
+        #
+        #   SIZED CORRECTIONS. A fixed 1-cycle phrase turns ~18 deg and slides
+        #   the centroid several px — more than the band — so a fixed phrase
+        #   hunts around centre forever. This learns px-per-degree and
+        #   degrees-per-cycle as it goes and asks for the phrase the error
+        #   actually needs, shaving pace when the phrase would be shorter than
+        #   the organ's soft-start ramp can deliver.
+        #
+        #   SELF-CALIBRATED HANDEDNESS. Which physical side camera column 0 is
+        #   on depends on how the camera was mounted. This does not assume: it
+        #   turns, checks whether the error shrank, and flips if it grew OR if
+        #   the shape vanished (losing it right after a turn is itself evidence
+        #   the turn went the wrong way). `dir` is only the FIRST guess.
+        "args": [("band_px", int, 3), ("pace", int, 60), ("dir", int, -1)],
+        "code": """
+async def run():
+    BAND = {band_px}
+    PACE = {pace} / 100.0
+    SETTLE_MS = 400
+    NOISE_PX = 1.0
+    MAX_FLIPS = 2
+    MIN_CY = 0.5        # shorter than this and the organ's ramp eats the phrase
+    MAX_CY = 2.0
+    MIN_PACE = 0.35     # the organ's floor; below it the legs lack authority
+    sign = 1 if {dir} > 0 else -1
+    flips = 0
+
+    # Learned in flight, so corrections can be sized rather than fixed.
+    px_per_deg = None
+    deg_per_cy = None
+
+    Legs.stop()
+    await asyncio.sleep_ms(600)
+
+    bias = 0.0
+    for _ in range(25):
+        _gx, _gy, gz = Imu.getGyro()
+        bias += gz
+        await asyncio.sleep_ms(20)
+    bias /= 25.0
+
+    async def look():
+        Legs.stop()
+        while Legs.since_still_ms() < SETTLE_MS:
+            await asyncio.sleep_ms(50)
+        return Thermal.blob()
+
+    async def turn_phrase(d, cycles, pace):
+        Legs.turn(d, pace)
+        last = time.ticks_ms()
+        yaw = 0.0
+        while Legs.cycles() < cycles:
+            if Legs.tipped():
+                break
+            await asyncio.sleep_ms(20)
+            now = time.ticks_ms()
+            _gx, _gy, gz = Imu.getGyro()
+            yaw += (gz - bias) * (time.ticks_diff(now, last) / 1000.0)
+            last = now
+        n = Legs.cycles()
+        Legs.stop()
+        return n, yaw
+
+    def plan(off):
+        \"\"\"cycles and pace for this much error, from what we have learned.\"\"\"
+        if not px_per_deg or not deg_per_cy or px_per_deg < 0.01 or deg_per_cy < 1.0:
+            return 1.0, PACE          # nothing measured yet: one honest phrase
+        want_deg = (abs(off) - BAND * 0.5) / px_per_deg
+        if want_deg < 0:
+            want_deg = 0.0
+        cy = want_deg / deg_per_cy
+        if cy > MAX_CY:
+            return MAX_CY, PACE
+        if cy < MIN_CY:
+            # Cannot shorten the phrase further without the ramp swallowing it,
+            # so take the degrees out of AMPLITUDE instead.
+            sc = cy / MIN_CY
+            p = PACE * sc
+            return MIN_CY, (MIN_PACE if p < MIN_PACE else p)
+        return cy, PACE
+
+    send("face: hold the shape within +/-{band_px}px of centre, pace {pace}%, "
+         "gz bias {{:.2f}} deg/s".format(bias))
+
+    while True:
+        b = await look()
+        if not b["present"]:
+            send("face: nothing warm in view — holding still")
+            await asyncio.sleep_ms(500)
+            continue
+
+        off = b["cx"] - Thermal.CENTRE_X
+        if abs(off) <= BAND:
+            send("face: CENTRED cx={{:.1f}} (off {{:+.1f}}px) area={{}} "
+                 "exc={{:.1f}}".format(b["cx"], off, b["area"], b["excess_c"]))
+            await asyncio.sleep_ms(400)
+            continue
+
+        cy, pace = plan(off)
+        d = "ccw" if (off * sign) < 0 else "cw"
+        n, yaw = await turn_phrase(d, cy, pace)
+        if Legs.tipped():
+            send("face: went over — stopping")
+            return
+
+        b2 = await look()
+        if not b2["present"]:
+            # Losing it right after turning is EVIDENCE, not merely a failure:
+            # it was in view, I turned, it is gone — so I turned AWAY from it.
+            # This is the only signal available when the error measurement is
+            # not, and without it the behaviour dead-ends: wrong way, target
+            # pushed off the frame, "nothing warm in view" forever.
+            if flips < MAX_FLIPS:
+                sign = -sign
+                flips += 1
+                back = "cw" if d == "ccw" else "ccw"
+                send("face: turned {{}} ({{:+.0f}} deg) and LOST it — wrong way. "
+                     "Flipping, turning {{}} to get it back".format(d, yaw, back))
+                await turn_phrase(back, n if n > MIN_CY else MIN_CY, pace)
+            else:
+                send("face: lost the shape turning {{}} ({{:+.0f}} deg), out of "
+                     "flips — it may simply have left".format(d, yaw))
+                await asyncio.sleep_ms(600)
+            continue
+
+        new_off = b2["cx"] - Thermal.CENTRE_X
+        removed = abs(off) - abs(new_off)
+
+        # Learn from what just happened, whichever way it went: the magnitude of
+        # centroid travel per degree is valid regardless of direction.
+        if abs(yaw) > 1.0:
+            if n > 0.05:
+                dpc = abs(yaw) / n
+                deg_per_cy = dpc if deg_per_cy is None else deg_per_cy + (dpc - deg_per_cy) * 0.4
+            ppd = abs(off - new_off) / abs(yaw)
+            if ppd > 0.01:
+                px_per_deg = ppd if px_per_deg is None else px_per_deg + (ppd - px_per_deg) * 0.4
+
+        send("face: {{}} {{:.2f}}cy pace {{:.2f}} ({{:+.0f}} deg), off {{:+.1f}} -> "
+             "{{:+.1f}}px, removed {{:+.1f}}px | {{}} px/deg, {{}} deg/cy".format(
+                 d, n, pace, yaw, off, new_off, removed,
+                 "?" if px_per_deg is None else "{{:.2f}}".format(px_per_deg),
+                 "?" if deg_per_cy is None else "{{:.0f}}".format(deg_per_cy)))
+
+        if removed < -NOISE_PX:
+            if flips < MAX_FLIPS:
+                sign = -sign
+                flips += 1
+                send("face: that made it worse — camera x runs the OTHER way. "
+                     "Flipping: column 0 is on the {{}} side".format(
+                         "cw" if sign < 0 else "ccw"))
+            else:
+                send("face: still getting worse after {{}} flips. Either the "
+                     "shape is moving faster than I turn, or the beam and the "
+                     "camera are not looking the same way.".format(flips))
+                await asyncio.sleep_ms(800)
+""",
+    },
+
+    "hand": {
+        # Fore-and-aft only, keyed on the nose beam: back off when the hand
+        # comes closer than target, follow when it goes away, hold in between.
+        # The simplest contingency demo this body can perform — and the one
+        # where a human can feel the coupling immediately, because they are
+        # driving one axis and the dog answers on the same axis.
+        #
+        # Why ToF-ONLY and not blob+ToF like `keep`: at hand distance the warm
+        # shape SATURATES the frame (a hand at 30 cm already near-fills a 32x24
+        # view), so its centroid stops meaning "which way is it" and a facing
+        # step would just spin. The camera is still used, but only as a coarse
+        # "something is filling my view" check to disambiguate a no-echo —
+        # see below, it is the difference between "nothing there" and "pressed
+        # against my nose", which the beam alone cannot tell apart.
+        "args": [("target_mm", int, 100), ("band_mm", int, 20), ("pace", int, 60)],
+        "code": """
+async def run():
+    TARGET = {target_mm}
+    BAND = {band_mm}
+    PACE = {pace} / 100.0
+    SETTLE_MS = 400
+    STEP_CYCLES = 1.0
+    FILLED_PX = 300      # blob this big means something is right in my face
+
+    async def look():
+        Legs.stop()
+        while Legs.since_still_ms() < SETTLE_MS:
+            await asyncio.sleep_ms(50)
+        return ToF.read_distance_mm(), Thermal.blob()
+
+    async def phrase(mode, cycles):
+        if mode == "forward":
+            Legs.forward(PACE)
+        else:
+            Legs.back(PACE)
+        while Legs.cycles() < cycles:
+            if Legs.tipped():
+                break
+            await asyncio.sleep_ms(50)
+        n = Legs.cycles()
+        Legs.stop()
+        return n
+
+    Legs.stop()
+    center_all()
+    send("hand: hold {target_mm}mm +/-{band_mm}mm on the nose beam, pace {pace}%")
+    while True:
+        mm, b = await look()
+
+        if mm is None:
+            send("hand: no ToF fitted — nothing to follow")
+            await asyncio.sleep(5)
+            continue
+
+        if mm <= 0:
+            # No echo. Two very different worlds look identical to the beam:
+            # nothing in front of me, or something too close/oblique to return.
+            # The wide sense breaks the tie.
+            if b["present"] and b["area"] >= FILLED_PX:
+                send("hand: no echo but the view is FULL (area={{}}) — "
+                     "something is on my nose, backing off".format(b["area"]))
+                n = await phrase("back", STEP_CYCLES)
+                send("hand: backed {{:.2f}} cycles blind".format(n))
+            else:
+                send("hand: no echo, view empty (area={{}}) — holding".format(
+                    b["area"]))
+                await asyncio.sleep_ms(500)
+            continue
+
+        err = mm - TARGET
+        if abs(err) <= BAND:
+            send("hand: holding at {{}}mm (err {{:+}}mm, band +/-{{}})".format(
+                mm, err, BAND))
+            await asyncio.sleep_ms(400)
+            continue
+
+        mode = "forward" if err > 0 else "back"
+        n = await phrase(mode, STEP_CYCLES)
+        after, _b2 = await look()
+        closed = (mm - after) if (after is not None and after > 0) else None
+        send("hand: {{}} {{:.2f}} cycles, err was {{:+}}mm, nose {{}} -> {{}} "
+             "(closed {{}}) — mm/cycle pair".format(
+                 mode, n, err, mm, after, "?" if closed is None else closed))
+""",
+    },
+
+    "keep": {
+        # Hold a distance from the warm shape: face it, close if it is beyond
+        # target+band, open if it is inside target-band, hold in between.
+        #
+        # This is the smallest behaviour that is genuinely INTERACTIVE — the
+        # human moves and the dog answers — and it is also the cleanest way to
+        # measure mm/cycle, because every phrase reports the cycles commanded
+        # beside the range before and after. Those pairs ARE the measurement
+        # (README missing item 1).
+        "args": [("target_mm", int, 350), ("band_mm", int, 60), ("pace", int, 70)],
+        "code": """
+async def run():
+    TARGET = {target_mm}
+    BAND = {band_mm}
+    PACE = {pace} / 100.0
+    SETTLE_MS = 400
+    CENTRED_PX = 5
+    STEP_CYCLES = 1.0
+
+    async def look():
+        Legs.stop()
+        while Legs.since_still_ms() < SETTLE_MS:
+            await asyncio.sleep_ms(50)
+        return Thermal.blob(), ToF.read_distance_mm()
+
+    async def phrase(mode, pace, cycles):
+        if mode == "forward":
+            Legs.forward(pace)
+        elif mode == "back":
+            Legs.back(pace)
+        else:
+            Legs.turn(mode, pace)
+        while Legs.cycles() < cycles:
+            if Legs.tipped():
+                break
+            await asyncio.sleep_ms(50)
+        n = Legs.cycles()
+        Legs.stop()
+        return n
+
+    Legs.stop()
+    center_all()
+    send("keep: target={target_mm}mm band=+/-{band_mm}mm pace={pace}%")
+    while True:
+        b, mm = await look()
+
+        if not b["present"]:
+            send("keep: no warm shape (tof={{}}) — holding".format(mm))
+            await asyncio.sleep_ms(500)
+            continue
+
+        off = b["cx"] - Thermal.CENTRE_X
+        if abs(off) > CENTRED_PX:
+            d = "ccw" if off < 0 else "cw"
+            n = await phrase(d, PACE * 0.6, 1.0)
+            send("keep: faced {{}} (off {{:+.1f}}px) {{:.2f}} cycles".format(d, off, n))
+            continue
+
+        if mm is None or mm <= 0:
+            send("keep: shape ahead (area={{}}) but NO ECHO — the beam is "
+                 "missing what the camera sees".format(b["area"]))
+            await asyncio.sleep_ms(400)
+            continue
+
+        err = mm - TARGET
+        if abs(err) <= BAND:
+            send("keep: holding at {{}}mm (err {{:+}}mm, inside +/-{{}})".format(
+                mm, err, BAND))
+            await asyncio.sleep_ms(500)
+            continue
+
+        mode = "forward" if err > 0 else "back"
+        n = await phrase(mode, PACE, STEP_CYCLES)
+        _b2, after = await look()
+        moved = (mm - after) if (after is not None and after > 0) else None
+        send("keep: {{}} {{:.2f}} cycles, err was {{:+}}mm, nose {{}} -> {{}} "
+             "(closed {{}}) — mm/cycle pair".format(
+                 mode, n, err, mm, after,
+                 "?" if moved is None else moved))
 """,
     },
     "turn": {

@@ -22,9 +22,13 @@ no sharing between stage folders — disk is cheap, contamination isn't).
                         resident) and maintains warm()/read_distance_mm()
                         percepts for instincts. Iterate blob quality here —
                         flash, look at the screen, BtnA cycles the delta.
-      3_interaction/    (prepared 2026-07-19, not yet runnable) legs +
+      3_interaction/    (RUNNABLE as of 2026-07-30) legs +
                         senses on one body: HAT on SoftI2C GPIO0/8, senses
-                        on Grove bus 0 — the buses coexist. The nudgeable
+                        on Grove bus 0 — the buses coexist. Adds the LEGS
+                        organ: instincts command a mode (forward/back/turn/
+                        stop) and the runtime owns the stride, the gentle
+                        envelope and the tip guard, so none of the three
+                        can be lost to a rewrite. The nudgeable
                         tabletop creature from the rover discussion: hand
                         as partner, proxemics as the shared variable,
                         capture/release as the pebble grammar's second
@@ -35,19 +39,41 @@ no sharing between stage folders — disk is cheap, contamination isn't).
                         design doc.
 
 Each stage folder: main.py (runtime), lib/ (drivers), creature.toml,
-character.md / system_prompt.md / seed_experience.md / seed_instinct.py
-(the mind), and for 1_action the puppyc tune.py + recipes.py (servo
-bring-up). 2_perception has no tuner — the display IS the tuner there.
+character.md / embodiment.md / seed_experience.md / seed_instinct.py
+(the mind), and for 1_action and 3_interaction the puppyc tune.py +
+recipes.py (servo bring-up). 2_perception has no tuner — the display and
+`stetho` are the tuner there.
+
+## The gait envelope (measured 2026-07-30 — applies to 1_action and 3_interaction)
+
+    amplitude 30°   period 1000 ms   stance_duty 0.65   straight-ramp stride
+
+The camera stands upright, which puts the CoM high and makes the chassis a
+tall inverted pendulum. The previously validated 40°/500 ms **tips it over**.
+Period is the gentleness lever (leg acceleration falls as 1/period²) and
+costs only ground speed. Smoothing the stride into a cosine made tipping
+WORSE, because zero velocity at a reversal means dwelling at the extreme leg
+angle — the full measurements and the reasoning are in `1_action/tune.py`.
+Turning scrubs the feet sideways, so it fights friction and is the most
+tip-prone move: a rubber mat improves the trot and degrades the turn.
 
 ## Running a stage
 
     flash creatures/robot_dog/2_perception --wifi <profile>
     spine creatures/robot_dog/2_perception
+    stetho                    # optional, beside the spine: the organ stream
 
 2_perception boots its display pump with or without WiFi — a failed STA
 connect is non-fatal there, so pure perception iteration needs no network.
 The device runs whatever was last FLASHED: switching between 1_action and
 2_perception always means reflashing (different main.py).
+
+Both stages announce themselves with a `BOOT:` line carrying `iv=` (their
+instinct version), `uptime=`, `mode=live` and the power rails, and accept
+the spine's `IV:` and `TIME:` — so a reconnect no longer restarts the
+creature, and the device knows the hour. The spine names the outcome
+either way: *"reconnected — creature NOT restarted"* vs *"sent instinct
+vN — creature RESTARTED (why)"*.
 
 ## What 2_perception is judging (from test_warmth)
 
@@ -56,6 +82,12 @@ delta 2.5 °C; a hand at 30 cm should near-fill the view; blob-area flicker
 at a fixed pose is the noise floor the eventual Warmth organ's presence()
 smoothing must absorb. Serial prints one greppable `perc:` line per second
 for tuning sessions.
+
+For the flicker question specifically, run `stetho` (UDP-OSC :9001, armed
+at boot by `STETHO_HOST` in main.py): area / excess_c / cx / cy / tof_mm
+arrive at ~4 Hz as LEVELS with 48-sample sparklines — a noise floor is a
+distribution over time, which a repainting number on the LCD cannot show.
+Presence flips arrive as `warm` events. Lossy and advisory by contract.
 
 ## Toward running 3_interaction
 
