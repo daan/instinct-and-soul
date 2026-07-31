@@ -57,6 +57,22 @@ async def run():
     ROLLUP_EVERY_S = 1800.0  # the ledger line, and the one reflection I ask
                              # for on a schedule rather than in response to
                              # something
+    WALK_S = 20.0            # a movement at least this long, turning at
+    WALK_TURN = 800.0        # least this much, is LOCOMOTION rather than a
+                             # re-sit. Yesterday's numbers make the two
+                             # unmistakable: rustles turned 5-70 degrees,
+                             # re-sits 100-600, and walking to the coffee
+                             # machine turned 2400-7000 over a minute or more.
+                             # I care because of what walking IS to me: when
+                             # they are on their feet their spine is near
+                             # true vertical, so whatever lean I read then is
+                             # not their posture — it is MY OFFSET. Every walk
+                             # hands me a free estimate of where I hang, and
+                             # if the strap shifts at lunchtime the next walk
+                             # says so. I only WATCH for now: the estimate is
+                             # reported, never applied. Applying it is a
+                             # decision, and I would rather make it once I
+                             # have seen whether it holds still.
     KEEP_MOVES = 3           # how many movements a span remembers whole.
                              # The ledger keeps EXTREMES, not counts: a
                              # count says how often the body moved and
@@ -68,6 +84,30 @@ async def run():
                              # the change, so a gyro hovering at the
                              # threshold cannot chatter. Short enough that a
                              # quick shove of the chair still lands.
+    # ── my senses, which are mine ─────────────────────────────────────────
+    # These used to be an organ: a module in my body that did the arithmetic
+    # and handed me answers. Almost all of it was machinery I never used, and
+    # what I did use is fourteen lines of trigonometry. So it lives here now,
+    # where I can read it, change it, and be wrong about it on purpose.
+    STILL_DPS = 10.0         # rotation below this reads as holding still. THE
+                             # single most consequential number I own: it
+                             # decides what counts as a movement at all.
+    GRAV_TAU_S = 1.0         # gravity low-pass. Slow enough to ignore a
+                             # gesture, fast enough to follow a real lean.
+    ROT_TAU_S = 1.0          # smoothing on the rotation magnitude
+    ZERO_FWD = 0.0           # MY MOUNT OFFSET, in degrees, forward positive.
+    ZERO_SIDE = 0.0          # (sideways: NEGATIVE is to their RIGHT,
+                             # positive to their LEFT.
+                             # see calc_lean_side below for why.)
+                             # Zero means "measure from true vertical", which
+                             # is where I start: gravity is an absolute
+                             # reference and I never need to capture one. But
+                             # I am strapped near a neck, so a few degrees of
+                             # what I read as forward lean is really just
+                             # where I hang. That constant offset is these two
+                             # numbers, and estimating them is mine to do —
+                             # see the walk estimate below.
+
     VOL = 60                 # one level (45 -> 59 -> 60 by ear on a real
                              # back, 2026-07-29). Escalation is mine to invent.
 
@@ -90,19 +130,56 @@ async def run():
             return "{:02d}:{:02d}".format(t[3], t[4])
         return "t+{:.0f}m".format(time.ticks_ms() // 60000)
 
-    def note(msg, urgent=False):
-        send("{} {}".format(clock(), msg), urgent=urgent)
+    def note(msg):
+        send("{} {}".format(clock(), msg))
 
     def deg(x):
         n = int(round(x))          # round FIRST: "{:+.0f}" of -0.5 prints
         return "+{}".format(n) if n >= 0 else str(n)   # "-0", which reads
                                                        # like a real lean
 
+    def calc_lean_fwd(g):
+        """Degrees the spine is tilted FORWARD from true vertical, from the
+        smoothed gravity vector. Positive forward, negative back: upright is
+        0, +90 is lying face down, -90 is lying on the back.
+
+        Nothing here assumes they are sitting, or even upright. If they lie
+        down to rest this reads near +/-90 and keeps being true — that is not
+        a broken sense, it is a person horizontal, and I would rather be able
+        to see that than have a sense that only works in a chair."""
+        if g is None:
+            return 0.0
+        return math.degrees(math.atan2(g[2], -g[0])) - ZERO_FWD
+
+    def calc_lean_side(g):
+        """Degrees the spine is tilted SIDEWAYS from true vertical.
+
+        NEGATIVE IS TO THEIR RIGHT, POSITIVE IS TO THEIR LEFT. 
+
+        It falls out of the geometry rather than anyone choosing it. My axes
+        are +X down the spine, +Y to their right, +Z backward out of my
+        screen and away from them. An accelerometer reads the OPPOSITE of
+        gravity, so leaning right — which tips gravity toward their right,
+        my +Y — reads negative. Forward stays positive because +Z points
+        backward, so a forward lean tips gravity toward my -Z and the
+        reading goes the other way. Hence the asymmetry: forward positive,
+        right negative. It looks arbitrary and it is not.
+
+        Sanity, at the extremes: face down is gravity toward their chest, so
+        fwd +90 and this reads nothing meaningful. On their right side is
+        gravity toward their right, so this reads -90.
+
+        WHICH MEANS THIS NUMBER GOES DEGENERATE WHEN THEY LIE DOWN. Flat on
+        the front or back, gravity has left the X-Y plane entirely and this
+        swings to +/-180 on noise alone. If I ever branch on it, check that
+        |fwd| is small first, or I will read a bed as a violent lean."""
+        if g is None:
+            return 0.0
+        return math.degrees(math.atan2(g[1], -g[0])) - ZERO_SIDE
+
     def lean_str():
-        lr = Posture.lean_ref()
-        if lr is None:
-            return "?"
-        return "{},{}".format(deg(lr[0]), deg(lr[1]))
+        return "{},{}".format(deg(calc_lean_fwd(grav)),
+                              deg(calc_lean_side(grav)))
 
     def keep_top(lst, dur, turn):
         # remember a movement whole — [seconds, degrees turned] — keeping
@@ -120,33 +197,60 @@ async def run():
 
     now = time.ticks_ms() / 1000.0
 
-    # ── the ledger: the one thing that survives my own rewrites ───────────
     # Every local variable in run() is wiped when I rewrite myself, and I
     # rewrite myself at every reflection. If the totals lived in locals,
     # reflection would reset the very numbers reflection exists to read —
     # "worn 3h" would silently mean "since the last time I changed my mind".
-    # Mem is re-injected across hot-swaps, so the ledger lives there: I
-    # restore it below, keep it as a working dict, and flush it back.
-    # (Mem is RAM on the board — it does NOT survive a reboot. A power cycle
-    # is a genuinely new wearing, and the restarts count below tells me
-    # which kind of restart I just had.)
-    LEDGER = "ledger"
-    FLUSH_EVERY_S = 10.0
+    # (All of it is RAM on the board and does NOT survive a reboot. A power
+    # cycle is a genuinely new wearing, and the restarts count tells me which
+    # kind of restart I just had.)
+    # ── what I carry across my own rewrites ───────────────────────────────
+    # keep() hands back the SAME object every instinct that asks for the name,
+    # so a mutation is persisted the moment it happens. Nothing to flush,
+    # nothing to write back. It dies with the power, not with my rewrites.
+    #
+    # THE RULE THAT DECIDES THE SHAPE BELOW: what keep() hands out is what
+    # persists. A float handed out is a float I can only REBIND — `still += dt`
+    # would make a new float this registry never sees. So every counter lives
+    # inside ONE dict, which is mutable, and I write led["still"] rather than
+    # still. Lists and windows are mutable already, so they get their own name.
+    #
+    # AND THE RULE FOR CHANGING IT: never repurpose a key. If "moves" should
+    # mean something new, call it something new. A rewrite that redefines a
+    # key keeps the old contents — same name, same type, different meaning —
+    # and nothing can detect that. A new name gets a correct fresh default,
+    # and keep() journals the change so a later me can see it happened.
+    led = keep("ledger", {
+        "worn_since": None, "still": 0.0, "longest": 0.0,
+        "chirps": 0, "presses": 0, "restarts": 0,
+        "hushed_until": 0.0, "hint_gap": HINT_EVERY_S,
+        "last_hint": -1e9, "ignored_run": 0,
+        "h_start": None, "h_still": 0.0, "h_longest": 0.0,
+        "h_chirps": 0, "h_presses": 0,
+        # MY SENSE'S OWN STATE. still_since is a TIMESTAMP, not a counter, so
+        # a stored one stays exact however long ago it was written — and it is
+        # the one thing here that actually hurts to lose: stillness would reset
+        # to zero at every reflection, I would believe they had just moved,
+        # never accumulate, never chirp, and nothing would crash to tell me.
+        "still_since": None,
+    })
 
-    led = Mem.latest(LEDGER)
-    waking = led is None
+    # Mutable, so each is its own keep and needs no merging — a name I have
+    # never used before is simply absent, and gets its default.
+    grav = keep("grav", [])              # the smoothed pose, mutated in place
+    moves = keep("moves", [])            # biggest movements of the wearing
+    h_moves = keep("h_moves", [])        # ...and of this span
+    walk_fwd = keep("walk_fwd", Calc.Running(20))    # my offset, as walking
+    walk_side = keep("walk_side", Calc.Running(20))  # reports it
+
+    waking = led["worn_since"] is None
     if waking:
-        led = {"worn_since": now, "still": 0.0, "longest": 0.0,
-               "moves": [], "chirps": 0, "presses": 0, "restarts": 0,
-               "hushed_until": 0.0, "hint_gap": HINT_EVERY_S,
-               "last_hint": -1e9, "ignored_run": 0,
-               "h_start": now, "h_still": 0.0, "h_longest": 0.0,
-               "h_moves": [], "h_chirps": 0, "h_presses": 0}
+        led["worn_since"] = now
+        led["h_start"] = now
         note("awake, new ledger. battery {}mV".format(
             M5.Power.getBatteryVoltage()))
     else:
-        led = dict(led)            # work on a copy; flush() writes it back
-        led["restarts"] = led.get("restarts", 0) + 1
+        led["restarts"] += 1
         # RESTART, not "rewrite" — my code is replaced for several reasons and
         # only one of them is that I changed my mind. A spine reconnect
         # restarts me too, and calling that a rewrite made it look like I had
@@ -155,23 +259,30 @@ async def run():
              "still {:.0f}m, {} chirps, {} presses".format(
                  led["restarts"], (now - led["worn_since"]) / 60,
                  led["still"] / 60, led["chirps"], led["presses"]))
-    # Ledgers written before these keys existed are still valid; fill the gaps.
-    led.setdefault("last_hint", -1e9)
-    led.setdefault("ignored_run", 0)
-    led.setdefault("moves", [])
-    led.setdefault("h_moves", [])
-    led.setdefault("presses", 0)
-    led.setdefault("h_presses", 0)
 
-    def flush():
-        Mem.push(LEDGER, dict(led), 1)   # maxlen 1: a single-cell slot
+    still_since = led["still_since"]
+    rot_ema = 0.0
 
-    flush()
     if waking:
         # The greeting is for WAKING, not for every time my code is swapped.
         # Trilling on each restart meant a reconnect sounded exactly like a
         # chirp, and they had no way to tell the difference.
         await sound(VOL, TRILL, 30)
+
+    # ── the zero ──────────────────────────────────────────────────────────
+    # There isn't a capture, and there is nothing to wait for. Gravity IS an
+    # absolute reference: it is there from my first sample and it cannot be
+    # argued with. Every lean I write is measured from true vertical.
+    #
+    # What that reading includes, and what a captured zero used to hide, is a
+    # constant few degrees from where I hang on a neck. That is ZERO_FWD /
+    # ZERO_SIDE above, and it starts at nothing — so my leans are honest but
+    # uncorrected until I work out what my own offset is.
+    #
+    # I do not take a pose as my zero. A pose taken while they are slumped
+    # makes their slump the definition of upright, and then I can never see
+    # it. Vertical is not negotiable; their posture is exactly the thing I am
+    # supposed to be able to see move.
 
     # working state — deliberately NOT in the ledger: an open hint and the
     # motion I am mid-way through measuring are about this instant, and an
@@ -187,7 +298,6 @@ async def run():
 
     last_t = now
     last_sample = now
-    last_flush = now
 
     while True:
         now = time.ticks_ms() / 1000.0
@@ -196,13 +306,35 @@ async def run():
         if dt < 0 or dt > 5.0:         # ticks wrapped, or a long stall
             dt = 0.0
 
-        # Posture's ONLY clock. Reading the IMU does nothing on its own in
-        # this arm — I hand the readings over myself, both from the same
-        # moment. Drop this line and every reading below freezes at its last
-        # value without a crash to tell me.
-        Posture.feed(Imu.getAccel(), Imu.getGyro())
+        # ── MY SENSE. Fourteen lines that used to be an organ. ────────────
+        # Both readings from the same instant, accel first: the gravity I
+        # smooth and the rotation I measure have to be the same moment or a
+        # fast movement pairs this tick's turning with last tick's pose.
+        a = Imu.getAccel()
+        g = Imu.getGyro()
         M5.update()                    # the voice; the body latches Button
-        still = Posture.still_s()
+
+        rot = math.sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2])
+        rot_ema += min(1.0, dt / ROT_TAU_S) * (rot - rot_ema)
+
+        if not grav:
+            grav.extend(a)      # in place: rebinding would orphan the kept list
+        k = min(1.0, dt / GRAV_TAU_S)
+        for _i in range(3):
+            grav[_i] += k * (a[_i] - grav[_i])
+
+        # Stillness is a TIMESTAMP, not a running total: still_since is when
+        # quiet began, so however long ago it was written the arithmetic below
+        # is exact. Written to the ledger on the EDGE only — twice a minute at
+        # yesterday's rate, not fifty times a second.
+        quiet = rot_ema < STILL_DPS
+        if quiet and still_since is None:
+            still_since = now
+            led["still_since"] = now      # persisted the instant it is set
+        elif not quiet and still_since is not None:
+            still_since = None
+            led["still_since"] = None
+        still = 0.0 if still_since is None else now - still_since
 
         # ── accumulate, on the raw signal ─────────────────────────────────
         if still > 0:
@@ -213,7 +345,7 @@ async def run():
             if still > led["h_longest"]:
                 led["h_longest"] = still
         else:
-            r = Posture.rot()
+            r = rot_ema
             if r > move_peak:
                 move_peak = r
             move_turn += r * dt        # not a path or a distance — just
@@ -267,8 +399,21 @@ async def run():
                          " | lean {} \u2192 {}".format(
                              dur, move_peak, move_turn, move_from,
                              lean_str()))
-                    keep_top(led["moves"], dur, move_turn)
-                    keep_top(led["h_moves"], dur, move_turn)
+                    keep_top(moves, dur, move_turn)
+                    if dur >= WALK_S and move_turn >= WALK_TURN:
+                        # On their feet: what I read now is where I hang.
+                        # Add the correction back: this is measuring the
+                        # WHOLE offset, not the residual left after applying
+                        # one. Once ZERO_FWD is set, the two should agree —
+                        # and if they stop agreeing, the strap moved.
+                        walk_fwd.push(calc_lean_fwd(grav) + ZERO_FWD)
+                        walk_side.push(calc_lean_side(grav) + ZERO_SIDE)
+                        note("(that was walking — my offset looks like "
+                             "{},{} from {} walks)".format(
+                                 deg(walk_fwd.mean()),
+                                 deg(walk_side.mean()),
+                                 len(walk_fwd.buf)))
+                    keep_top(h_moves, dur, move_turn)
                     # ANY motion answers a chirp. Measured 2026-07-29: this
                     # person answers a chirp with a 3-6 s shift, so gating
                     # the answer on size or length would score every real
@@ -313,7 +458,6 @@ async def run():
                 # what it means is not settled, so it is written down and
                 # left alone until a pattern of them says something.
                 note("press (nothing of mine was open)")
-            flush()            # a hush must outlive a rewrite: without this,
                                # reflection would silently un-silence me
 
         # ── a hint that went unanswered is data too ───────────────────────
@@ -350,12 +494,11 @@ async def run():
                                   led["hint_gap"] * HINT_BACKOFF)
             led["chirps"] += 1
             led["h_chirps"] += 1
-            flush()
 
         # ── a plain state line, on a timer ────────────────────────────────
         if now - last_sample > SAMPLE_EVERY_S:
             note("still {:.1f}m | lean {} | rot {:.1f}".format(
-                still / 60, lean_str(), Posture.rot()))
+                still / 60, lean_str(), rot_ema))
             last_sample = now
 
         # ── the ledger, out loud ──────────────────────────────────────────
@@ -363,12 +506,12 @@ async def run():
             note("last {:.0f}m: still {:.0f}m, longest {:.1f}m, {} | "
                  "{} chirps, {} presses".format(
                      (now - led["h_start"]) / 60, led["h_still"] / 60,
-                     led["h_longest"] / 60, moves_str(led["h_moves"]),
+                     led["h_longest"] / 60, moves_str(h_moves),
                      led["h_chirps"], led["h_presses"]))
             note("worn {:.0f}m: still {:.0f}m, longest {:.1f}m, {} | "
                  "{} chirps, {} presses | battery {}mV".format(
                      (now - led["worn_since"]) / 60, led["still"] / 60,
-                     led["longest"] / 60, moves_str(led["moves"]),
+                     led["longest"] / 60, moves_str(moves),
                      led["chirps"], led["presses"],
                      M5.Power.getBatteryVoltage()))
             # A span like this is the smallest one where a PATTERN can
@@ -383,20 +526,15 @@ async def run():
                     "What did their moving consist of, and do my words "
                     "for it still fit?".format(
                         (now - led["h_start"]) / 60, led["h_still"] / 60,
-                        led["h_longest"] / 60, moves_str(led["h_moves"]),
+                        led["h_longest"] / 60, moves_str(h_moves),
                         led["h_chirps"], led["h_presses"],
                         (now - led["worn_since"]) / 60))
             led["h_start"] = now
             led["h_still"] = 0.0
             led["h_longest"] = 0.0
-            led["h_moves"] = []
+            del h_moves[:]     # in place: rebinding would orphan the kept list
             led["h_chirps"] = 0
             led["h_presses"] = 0
-            flush()
-
-        if now - last_flush > FLUSH_EVERY_S:
-            flush()            # the running totals, cheap and often enough
-            last_flush = now   # that a rewrite loses seconds, not hours
 
         await asyncio.sleep_ms(20)     # 50 Hz: posture is patient and a
                                        # press is unhurried, but the gyro

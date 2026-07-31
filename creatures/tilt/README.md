@@ -151,7 +151,10 @@ directory, no sharing between conditions unless made explicit.
                                    HINT_AFTER_S measured down to 150s (at 240
                                    the chirp was structurally mute — 0 of 162
                                    stretches reached it); DISPLAY_MODE off;
-                                   and the 20x heartbeat bug fixed.
+                                   STETHO_HOST detached; the 20x heartbeat
+                                   bug fixed; and NO ORGAN AT ALL — the sense
+                                   is fourteen lines in the instinct, and the
+                                   zero is gravity itself.
     creatures/tilt/training/       condition_1 with the instinct TEMPO
                                    (FROZEN_AFTER_S, CALL_EVERY_S, OUTCOME_S,
                                    HUSH_WINDOW_S, HUSH_GRACE_S) hoisted into
@@ -329,6 +332,60 @@ stale numbers that look fresh (fix: expose `age_s()`). A Madgwick would also
 become affordable there — a signed world-frame vector rather than a gravity
 low-pass — though on this board `getMag()` is `(0,0,0)`, so heading would drift
 unmeasured.
+
+### The organ dissolved into the instinct (2026-07-31)
+
+Measured before removing it: `lib/organs.py` was 342 non-comment lines, of
+which the seed used about **fourteen lines' worth of arithmetic**. Ninety
+lines of dead verb/episode machinery sat inside `feed()` alone, unreachable
+since condition_2 dropped the grammar. `ORGANS.md` admits a capability to the
+body only when *"souls repeatedly almost build it and fail on mechanics"* —
+a gravity low-pass, a gyro-magnitude EMA, a timestamp and two `atan2`s are
+not that.
+
+So condition_4 has no organ, no `organs.py`, no symlink, and `main.py` reads
+no IMU and holds no body state. The `Calc` narrowing moved from the dead
+`attach()` into `INSTINCT_ENV`.
+
+**What it buys.** A change to what "still" means is a spine push instead of a
+reflash — three of yesterday's reflashes would have been hot-swaps. The whole
+"who feeds the organ" question, which cost two long exchanges, stops existing.
+The embodiment's 91 lines of organ API became 77 lines describing a sense the
+soul can actually read.
+
+**What it costs, and the one thing that had to be got right.** The sense's
+state is now the instinct's to keep. Three pieces are disposable — `grav` and
+`rot_ema` reconverge in a second. **`still_since` is not:** lose it and
+stillness resets to zero at every reflection, so the creature believes the
+person just moved, never accumulates, never chirps, and nothing crashes. It
+rides in the ledger in `Mem`, written on the still/moving EDGE rather than on
+a timer — it is a timestamp, so a correctly stored one stays exact however
+long ago it was written, and edges are rare (162 in 67 minutes measured).
+Driven and asserted: 203 s of continuous stillness across a v1→v2 rewrite.
+
+**The zero is gravity.** No capture, no stillness wait, no `set_upright`, no
+`has_ref`, no `REF_GRAV`. Gravity is an absolute reference — it is there from
+the first sample and cannot be argued with — so leans are measured from true
+vertical. That matters beyond convenience: *a zero taken while the wearer
+slouches makes the slouch the definition of upright, and the slouch then
+becomes invisible.* The cost is a constant few degrees from hanging on a neck,
+which is `ZERO_FWD`/`ZERO_SIDE` in the instinct, starting at zero — so leans
+are honest but uncorrected.
+
+**The offset is learnable, and the seed already collects the evidence.**
+Standing and walking, the trunk is near vertical, so the lean read during
+locomotion is not posture — it is the mount. The seed identifies locomotion
+from the bout measures it already has (`WALK_S = 20`, `WALK_TURN = 800`;
+yesterday's rustles turned 5-70°, re-sits 100-600°, walks 2400-7000°), pushes
+those leans into a `Calc.Running`, and reports the estimate. It does **not**
+apply it — one afternoon should say whether the number holds still before
+anything depends on it.
+
+**Tuner.** `set STILL_DPS 8` is gone with the module it patched; thresholds
+are recipe ARGUMENTS now (`state 8`), which is explicit and per-run. New
+`offset` recipe measures the mount offset directly: stand up, hold still, it
+prints `ZERO_FWD`/`ZERO_SIDE` and their spread. `posture`/`setref`/`verbs`
+deleted with the organ they called.
 
 ### `Calc` narrowed to three tools (2026-07-30)
 

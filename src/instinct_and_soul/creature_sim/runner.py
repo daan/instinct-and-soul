@@ -46,6 +46,37 @@ class _NoButton:
         return None          # never pressed this wearing
 
 
+
+# ── keep(): what an instinct carries across its own rewrites ────────────────
+# Module scope, so it outlives every hot-swap — the same lifetime as Mem, but
+# by REFERENCE rather than by copy. Mirrors the device runtime (main.py) so a
+# seed written for the board behaves identically here.
+_kept = {}
+
+
+def _make_keep(send):
+    def keep(name, default):
+        """The same object, every instinct that asks for this name."""
+        if name not in _kept:
+            _kept[name] = default
+            return _kept[name]
+        obj = _kept[name]
+        # Additive only: a rewrite may declare new fields, but keys it no
+        # longer declares are reported and NOT deleted — forgetting one in a
+        # defaults dict must not destroy accumulated history.
+        if isinstance(default, dict) and isinstance(obj, dict):
+            added = [k for k in default if k not in obj]
+            gone = [k for k in obj if k not in default]
+            for k in added:
+                obj[k] = default[k]
+            if added or gone:
+                send("LOG: my ledger changed shape — gained {}, no longer "
+                     "declares {}".format(added or "nothing", gone or "nothing"))
+        return obj
+    return keep
+
+
+
 def _build_scope(*, send, aio, imu, speaker, synth, mem, m5):
     return {
         "__name__":   "__instinct__",
@@ -71,6 +102,7 @@ def _build_scope(*, send, aio, imu, speaker, synth, mem, m5):
         "Synth":      synth,
         "Mem":        mem,
         "M5":         m5,
+        "keep":       _make_keep(send),
         "Calc":       Calc,
     }
 

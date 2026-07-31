@@ -4,30 +4,51 @@ IMU, nothing attached.
 
 Same spine as the midi_dancer runtime — boots M5 hardware, brings up WiFi,
 opens a WebSocket to the spine, and runs an asyncio loop with heartbeat +
-instinct-hotswap tasks. The body sense is POSTURE: lib/organs.py attaches a
-Posture organ (lean vs a captured upright, stillness duration) to the
-instinct scope on every hot-swap — worn at the base of the neck, this body
-watches the wearer's spine the way a cricket watches its ground. The voice
-is the INTERNAL speaker only.
+instinct-hotswap tasks. The voice is the INTERNAL speaker only.
 
-Unlike condition_1/training/condition_2, this organ is FED BY THE INSTINCT:
-Posture.feed(a, g) is an explicit call and `Imu` is handed over untouched.
-Nothing in this file reads the IMU, so an instinct that stops feeding stops
-sensing — see lib/organs.py for why that trade was made.
+NO POSTURE ORGAN IN THIS ARM (2026-07-31). condition_1/training/condition_2
+attach one that interposes on the instinct's Imu reads; condition_3 kept it
+but had the instinct feed it explicitly. Here it is gone. What survived the
+removal of the ref capture, the verb machine and the flavour words was about
+fourteen lines of arithmetic — a gravity low-pass, a gyro-magnitude EMA, a
+stillness timestamp and two atan2s — and ORGANS.md admits a capability to the
+body only when souls repeatedly almost build it and fail on the mechanics.
+Two atan2s are not that. So the sense lives in seed_instinct.py, where the
+soul can read it, retune it, and be wrong about it on purpose.
+
+What that buys: a change to what "still" means is a spine push instead of a
+reflash. What it costs: the sense's state is now the instinct's to keep — and
+keep() is what it keeps it with.
+
+NO Mem IN THIS ARM either (2026-07-31). Mem bundled two unrelated jobs —
+"this survives my rewrites" and "this is a bounded ring buffer" — and split
+apart, both get simpler. keep() does the first, by REFERENCE rather than by
+copy, so a mutation persists the instant it happens: no push, no flush, no
+restore, and nothing to forget. Calc.Ring does the second, with maxlen as a
+constructor argument so a window cannot exist without stating its size. The
+arbitrary MAX_SLOTS = 8 and its silent drop go with the registry that needed
+them. Mem is untouched everywhere else — the other creatures use it and the
+earlier arms are frozen.
+
+This file therefore reads no IMU at all and holds no body state.
 
 Runtime provides to instinct code:
   send(msg)        write a journal line (costs nothing, does NOT summon)
   reflect(reason)  ask the soul to think, and say why (the only summons)
-  Button           the explicit channel: Button.clicks() / .waiting()
-  IV               this instinct's version number, for telling a rewrite
-                   from a re-push (see the three lifecycles in the README)
-  asyncio, time, struct, math, M5, Imu, Speaker, Mem
-  Posture, Calc (narrowed)        via organs.attach
+  Button           the explicit channel: Button.pressed() / .last_s()
+  IV               this instinct's version number: a fresh spine session
+                   always starts at v1, every rewrite after that is v2, v3...
+  keep(name, dflt) the SAME object every instinct that asks for that name.
+                   Module scope here, so it outlives every hot-swap and dies
+                   with the power. What it hands out is what persists: a float
+                   can only be REBOUND, so counters live in one mutable dict,
+                   while lists and windows get their own name.
+  Calc             NARROWED to OneEuro / Running / Onset / Ring
+  asyncio, time, struct, math, M5, Imu, Speaker
 
 Device-side libraries flashed to /lib (creatures/tilt/<condition>/lib/*.py):
-  organs.py        -> attach(scope) (the Posture sense; no Tap in this arm)
-  creature_mem.py  -> Mem           (persistent named-slot memory)
-  calc.py          -> Calc          (streaming signal toolkit)
+  calc.py          -> Calc          (signal toolkit; Ring lives here now)
+  stethoscope.py   -> the bench organ stream (detached; see STETHO_HOST)
 """
 
 import M5
@@ -76,9 +97,7 @@ import math
 from machine import Pin, I2C, PWM
 
 # ── The voice + toolkits + body senses ──────────────────────────────────────
-from creature_mem import Mem as _MemClass
 from calc import Calc
-import organs
 
 # The voice is the INTERNAL speaker. Two sticks3 speaker rules
 # (test/STICKS3/API.md + legacy runtime): do NOT Speaker.begin() at boot —
@@ -87,40 +106,46 @@ import organs
 # (the heartbeat ticks it every 50 ms).
 Speaker = M5.Speaker
 
-# One Mem instance, created once and re-injected on every hot-swap so a
-# creature's sliding window survives instinct rewrites.
-Mem = _MemClass()
+# ── keep(): what an instinct carries across its own rewrites ────────────────
+#
+# Module scope, so it outlives every hot-swap and dies with the power — the
+# same lifetime as Mem, but by REFERENCE rather than by copy. The instinct
+# holds the very object this dict holds, so a mutation is persisted the
+# instant it happens. There is nothing to flush and nothing to restore.
+#
+# THE ONE RULE: what keep() hands out is what persists. keep("n", 0.0) hands
+# out a FLOAT, and `n += 1` rebinds the local name to a new float that this
+# registry never sees. Only MUTABLE things persist by themselves — which is
+# why a bag of counters has to be one dict (mutate led["n"], not n) while a
+# list or a Ring can be its own keep.
+#
+# Cheap, but not free: the default is constructed on every call and thrown
+# away when the name already exists. Call keep() at the top of run(), never
+# inside a loop.
+_kept = {}
 
-# ── Config ──────────────────────────────────────────────────────────────────
-# Prefer wifi.py if flashed alongside main.py; otherwise use defaults below.
 
-try:
-    import wifi as _w
-    MODE = _w.MODE
-    AP_SSID, AP_PASS, AP_CHANNEL = _w.AP_SSID, _w.AP_PASS, _w.AP_CHANNEL
-    STA_SSID, STA_PASS = _w.STA_SSID, _w.STA_PASS
-    SPINE_HOST_AP, SPINE_HOST_STA = _w.SPINE_HOST_AP, _w.SPINE_HOST_STA
-    SPINE_PORT = _w.SPINE_PORT
-    CONFIG_SOURCE = "wifi.py"
-except ImportError:
-    MODE = "sta"
-    AP_SSID, AP_PASS, AP_CHANNEL = "tilt", "tilt1234", 6
-    STA_SSID, STA_PASS = "Lee", "coffeepot"
-    SPINE_HOST_AP, SPINE_HOST_STA = "192.168.4.2", "10.0.0.2"
-    SPINE_PORT = 8765
-    CONFIG_SOURCE = "defaults"
-
-# ── Connectivity policy (edit HERE — no config files) ──────────────────────
-WIFI_MODE = "live"     # "live": always connected (the kata way).
-                       # "batch": radio OFF by default; wakes on boot, every
-                       # FLUSH_EVERY_S, on send(..., urgent=True), on CRASH,
-                       # and once on low battery — syncs the buffered journal,
-                       # waits for a reflection to land, then sleeps again.
-FLUSH_EVERY_S = 900    # batch: scheduled journal sync every 15 min
-REFLECT_WAIT_S = 180   # batch: stay connected this long after a flush for a
-                       # reflection to arrive (a NAP from the spine ends the
-                       # wait early; a new instinct extends it briefly)
-LOW_VBAT_MV = 3300     # one final wake+flush below this, then quiet
+def keep(name, default):
+    """The same object, every instinct that asks for this name."""
+    if name not in _kept:
+        _kept[name] = default
+        return _kept[name]
+    obj = _kept[name]
+    # A rewrite may declare fields the previous one never wrote. Merge them
+    # in, or the first read of a new key is a KeyError thrown at a reflection
+    # — the worst possible moment. ADDITIVE ONLY: keys this code no longer
+    # declares are reported but NOT deleted, because a rewrite that merely
+    # forgot one would otherwise destroy hours of accumulated history over a
+    # typo. A few stale bytes for one wearing is the cheaper mistake.
+    if isinstance(default, dict) and isinstance(obj, dict):
+        added = [k for k in default if k not in obj]
+        gone = [k for k in obj if k not in default]
+        for k in added:
+            obj[k] = default[k]
+        if added or gone:
+            send("LOG: my ledger changed shape — gained {}, no longer "
+                 "declares {}".format(added or "nothing", gone or "nothing"))
+    return obj
 
 
 def usb_present():
@@ -141,14 +166,25 @@ ALWAYS_ON = True       # True: never nap even on battery — journal lines
                        # before any worn/battery study deployment.
 HEARTBEAT_INTERVAL = 5  # seconds between HEARTBEATs while connected; announced
                         # to the spine in BOOT so its timeout adapts
-STETHO_HOST = "spine"   # the organ stream (UDP-OSC :9001 — movement 3,
+STETHO_HOST = None      # WORN (set 2026-07-30): DETACHED. The organ stream
+                        # is bench insight, never a data pipeline, and left
+                        # armed it was the LARGEST radio load on this body —
+                        # the organ probes posture_deg / rot_ema / still_s
+                        # every 0.5 s as three separate UDP packets, so 6/s,
+                        # ~24,000 over the 67-minute wearing that ended in a
+                        # brownout loop. (The 20x heartbeat bug fixed the
+                        # same day was 4/s, i.e. smaller than this.) With the
+                        # host unset, stethoscope.tap()/probe() see no target
+                        # and return without opening a socket, so the organ's
+                        # own _tap/_probe calls cost a None check.
+                        #
+                        # the organ stream (UDP-OSC :9001 — movement 3,
                         # advisory and lossy). "spine": arm toward SPINE_HOST
                         # at every radio-up; an "x.x.x.x" string: toward that
                         # host; None: stay detached until the tuner's `stetho`
                         # command arms it by hand. Attach state is RAM-only
                         # and batch naps kill the socket, hence re-arm on
-                        # radio-up. Worn deployments: None — the stream is
-                        # bench insight, never a data pipeline.
+                        # radio-up.
 
 # ── Display policy (edit HERE, like WIFI_MODE) ──────────────────────────────
 DISPLAY_MODE = "off"    # WORN (set 2026-07-30): the panel was lit at
@@ -468,8 +504,20 @@ INSTINCT_ENV = {
     "M5": M5,
     "Imu": Imu,
     "Speaker": Speaker,
-    "Mem": Mem,
-    "Calc": Calc,
+    # Calc, NARROWED. calc.py ships to every board but was written for the
+    # dancers: across all device creatures 0 of 226 soul-written instincts
+    # ever used it. Rather than offer eight classes nobody reaches for, this
+    # body hands over the three that suit a back. Madgwick/Pose and Flow want
+    # a compass this board does not have (getMag() is always zeros) and would
+    # mean a second orientation filter beside the one in the instinct;
+    # Periodicity and AlphaBeta track beats at 50-200 bpm, and nothing this
+    # animal cares about happens at a tempo. A tool in scope is an invitation
+    # to use it.
+    "keep": keep,
+    "Calc": type("Calc", (), {"OneEuro": Calc.OneEuro,
+                              "Running": Calc.Running,
+                              "Onset": Calc.Onset,
+                              "Ring": Calc.Ring}),
 }
 
 DEFAULT_INSTINCT = """
@@ -485,14 +533,6 @@ async def run_instinct(code):
     # stored in its ledger to tell a REWRITE (version changed) from a re-push
     # or reconnect (version identical). 0 = the seed, before any IV: arrived.
     env["IV"] = instinct_version
-    # The body senses: wraps Imu/Synth, adds Kata/Motion/Handling/Ear.
-    # Organ module state survives hot-swaps (module imported once); attach
-    # re-wraps the fresh scope exactly like the sim harness does.
-    try:
-        organs.attach(env)
-    except Exception as e:
-        send("CRASH:organs:{}".format(e))
-        print("organs: attach error:", e)
     try:
         exec(code, env)
     except Exception as e:

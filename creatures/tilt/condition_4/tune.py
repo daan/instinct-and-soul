@@ -25,10 +25,6 @@ Organ calibration (the live bench — run `stetho` in a second terminal):
                                  posture_deg, still_s, ep_start, verbs) as
                                  UDP-OSC to the laptop's stetho dashboard;
                                  ip is auto-detected from this connection
-    set <param> <value>          live-patch an organs.py threshold (e.g.
-                                 `set STILL_DPS 8`) — takes effect without
-                                 reflashing, lost on reboot; when a value
-                                 feels right, write it into organs.py
     params                       report the current (possibly patched) values
 
 Cricket:
@@ -54,18 +50,9 @@ from recipes import RECIPES, INSTINCT_IDLE
 
 
 PLACEHOLDER = (
-    "state | button | posture | setref | verbs | stetho [ip|off] | set <param> <val> "
-    "| params | cricket [1-3] [vol] | lowbat [vol] "
+    "state [still_dps] | offset [secs] | button | stetho [ip|off] "
+    "| cricket [1-3] [vol] | lowbat [vol] "
     "| deploy baseline|<path> | vbat | power | imulog | off"
-)
-
-# The organs.py thresholds that `set` may live-patch. Module attributes,
-# read at call time by the organ — assignment takes effect immediately and
-# survives instinct hot-swaps (not reboots).
-TUNABLES = (
-    "STILL_DPS", "GRAV_TAU_S",
-    "EP_SETTLE_S", "SHIFT_DEG", "STRETCH_DEG", "AWAY_S",
-    "FLAVOR_UP_DEG", "FLAVOR_FWD_DEG",
 )
 
 DEPLOY_SHORTCUTS = {
@@ -113,21 +100,19 @@ class TiltTuner(TuneAppBase):
 
         # overlay commands run a few lines, then fall through into the
         # last stream so the view keeps flowing
-        overlay = cmd in ("set", "params", "stetho")
+        overlay = cmd in ("stetho",)
 
         try:
             if cmd == "state":
-                code = format_recipe(RECIPES["state"])
-                self.log_msg("the seed's own view: still / lean-from-ref / rot",
+                code = format_recipe(RECIPES["state"], parts[1:])
+                self.log_msg("the seed's own sense: still / lean / rot / up. "
+                             "`state 8` to try a different STILL_DPS",
                              style="cyan")
 
-            elif cmd == "posture":
-                code = format_recipe(RECIPES["posture"])
-                self.log_msg("live posture stream", style="cyan")
-
-            elif cmd == "setref":
-                code = format_recipe(RECIPES["setref"])
-                self.log_msg("capturing upright in 3s — sit the way you mean it", style="cyan")
+            elif cmd == "offset":
+                code = format_recipe(RECIPES["offset"], parts[1:])
+                self.log_msg("STAND UP and hold still — measures your mount "
+                             "offset (ZERO_FWD / ZERO_SIDE)", style="cyan")
 
             elif cmd == "cricket":
                 variant = arg(1, 1, 3, 1)
@@ -152,10 +137,6 @@ class TiltTuner(TuneAppBase):
                     self.log_msg("seed has a syntax error: {}".format(e), style="yellow")
                     return
                 self.log_msg("deploying {} ({} bytes)".format(path, len(code)), style="cyan")
-
-            elif cmd == "verbs":
-                code = format_recipe(RECIPES["verbs"])
-                self.log_msg("movement-verb stream — fidget, shift, stretch, walk", style="cyan")
 
             elif cmd == "button":
                 code = format_recipe(RECIPES["button"])
@@ -186,31 +167,6 @@ class TiltTuner(TuneAppBase):
                            + self._stream_code
                     self.log_msg("organ stream -> {}:9001 — run `stetho` in "
                                  "another terminal".format(ip), style="cyan")
-
-            elif cmd == "set":
-                if len(parts) != 3:
-                    self.log_msg("set <param> <value> — params: " + " ".join(TUNABLES),
-                                 style="yellow")
-                    return
-                name = parts[1].upper()
-                if name not in TUNABLES:
-                    self.log_msg("unknown param {} — one of: {}".format(
-                        name, " ".join(TUNABLES)), style="yellow")
-                    return
-                val = float(parts[2])
-                code = ("import organs\n"
-                        "organs.{n} = {v}\n"
-                        "send('set organs.{n} = {v} (live; reboot restores "
-                        "the flashed default)')\n").format(n=name, v=val) \
-                       + self._stream_code
-                self.log_msg("organs.{} = {} — stream resumes".format(name, val),
-                             style="cyan")
-
-            elif cmd == "params":
-                code = ("import organs\n"
-                        "send('params: ' + ' '.join('{}={}'.format(n, getattr(organs, n)) "
-                        "for n in " + repr(list(TUNABLES)) + "))\n") + self._stream_code
-                self.log_msg("reading live organ params", style="cyan")
 
             elif cmd == "lowbat":
                 vol = arg(1, 1, 255, 100)

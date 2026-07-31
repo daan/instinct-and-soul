@@ -2,11 +2,22 @@
 recipes.py — instinct templates for the tilt tuner.
 
 This body is a PLAIN StickS3 — internal speaker and IMU, nothing attached.
-The tuner's jobs before anyone wears it for real: find the CRICKET (a chirp
-subtle enough to be missable — five designs to audition, each looping so
-you can live with it a while) and calibrate the POSTURE read on a real back
-(capture upright, watch the angle while sitting well and slouching) and
-confirm the BUTTON, which is the only channel the wearer controls.
+
+NO ORGAN IN THIS ARM. condition_1/2/3 had a Posture module in the body and
+these recipes called it. Here the sense is fourteen lines of arithmetic that
+live in the instinct, so each recipe below carries its own copy. That is not
+duplication to be tidied away — it is the point. A recipe is instinct code,
+and a recipe you can read end to end is a recipe whose numbers you can trust.
+
+It also changes how you tune. There is no `set STILL_DPS 8` any more, because
+there is no module attribute to patch: the thresholds are ARGUMENTS. `state 8`
+runs the whole sense at STILL_DPS=8 and you watch what happens. Explicit, per
+run, and exactly what the instinct will do with that number.
+
+The tuner's jobs before anyone wears it: find the CRICKET (a chirp subtle
+enough to be missable) and see the POSTURE arithmetic behave on a real back —
+that gravity settles, that lean reads near zero when they sit upright, and
+that the still/moving line falls where a person would put it.
 
 Each entry maps a recipe name to a spec:
   "args" — list of (arg_name, type, default) tuples used to fill {placeholders}
@@ -20,92 +31,158 @@ Recipes with no args are sent verbatim, so single braces are fine there.
 INSTINCT_IDLE = """
 async def run():
     send("idle: tilt tuner")
+    grav = None
     n = 0
     while True:
-        Posture.feed(Imu.getAccel(), Imu.getGyro())
+        a = Imu.getAccel()
+        if grav is None:
+            grav = list(a)
+        for i in range(3):
+            grav[i] += 0.02 * (a[i] - grav[i])
         n += 1
         if n % 60 == 0:
-            a = Posture.angle()
-            send("posture={} still={:.0f}s vbat={}mV".format(
-                a if a is not None else "no-ref", Posture.still_s(),
-                M5.Power.getBatteryVoltage()))
+            send("gravity=({:.2f},{:.2f},{:.2f}) vbat={}mV".format(
+                grav[0], grav[1], grav[2], M5.Power.getBatteryVoltage()))
         await asyncio.sleep_ms(50)
 """
 
 RECIPES = {
     "state": {
-        "args": [],
+        "args": [("still_dps", float, 10.0)],
         "code": """
 async def run():
-    # The calibration view: exactly the three numbers the seed
-    # journals. Sit, fidget, walk, press. Watch that (a) rot settles to a few
-    # dps when you hold still, (b) lean reads ~0,0 after the capture below,
-    # and (c) your presses land. STILL_DPS is the line between still and not.
-    send("state: capturing upright in 3s — sit the way you mean it...")
-    t0 = time.ticks_ms()
-    while time.ticks_ms() - t0 < 3000:
-        Posture.feed(Imu.getAccel(), Imu.getGyro())
-        await asyncio.sleep_ms(20)
-    send("upright captured" if Posture.set_upright() else "capture FAILED")
+    # THE CALIBRATION VIEW — exactly the sense the seed runs, at
+    # STILL_DPS={still_dps}, printing the three numbers it journals.
+    #
+    # Sit, fidget, walk, press. Watch that:
+    #   (a) rot settles to a few dps when you hold still
+    #   (b) lean reads near 0,0 when you sit the way you mean to — and note
+    #       how far off zero it actually sits, because THAT is your mount
+    #       offset, the constant few degrees from hanging on a neck
+    #   (c) still climbs while you hold and snaps to 0 when you move
+    #   (d) up reads X-. Anything else and it is not on a back.
+    #
+    # If the still/moving line falls in the wrong place, re-run with a
+    # different number: `state 8` is more sensitive, `state 14` less.
+    STILL_DPS = {still_dps}
+    GRAV_TAU_S, ROT_TAU_S = 1.0, 1.0
+    grav, rot_ema, still_since, last_t = None, 0.0, None, time.ticks_ms() / 1000.0
+    send("state: sense running at STILL_DPS={still_dps}")
     n = 0
     while True:
-        Posture.feed(Imu.getAccel(), Imu.getGyro())
+        now = time.ticks_ms() / 1000.0
+        dt = now - last_t
+        last_t = now
+        if dt < 0 or dt > 5.0:
+            dt = 0.0
+        a = Imu.getAccel()
+        g = Imu.getGyro()
+        M5.update()
+        rot = math.sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2])
+        rot_ema += min(1.0, dt / ROT_TAU_S) * (rot - rot_ema)
+        if grav is None:
+            grav = list(a)
+        k = min(1.0, dt / GRAV_TAU_S)
+        for i in range(3):
+            grav[i] += k * (a[i] - grav[i])
+        quiet = rot_ema < STILL_DPS
+        if quiet and still_since is None:
+            still_since = now
+        elif not quiet:
+            still_since = None
+        still = 0.0 if still_since is None else now - still_since
         if Button.pressed():
             send("PRESS")
         n += 1
         if n % 50 == 0:      # ~1 s at 50 Hz
-            lr = Posture.lean_ref()
-            send("still {:5.1f}s | lean {:+.1f},{:+.1f} | rot {:5.1f} | up {}".format(
-                Posture.still_s(), lr[0] if lr else 0.0, lr[1] if lr else 0.0,
-                Posture.rot(), Posture.up_axis()))
+            fwd = math.degrees(math.atan2(grav[2], -grav[0]))
+            side = math.degrees(math.atan2(grav[1], -grav[0]))
+            i = 0
+            if abs(grav[1]) > abs(grav[i]):
+                i = 1
+            if abs(grav[2]) > abs(grav[i]):
+                i = 2
+            up = "XYZ"[i] + ("+" if grav[i] > 0 else "-")
+            send("still {{:5.1f}}s | lean {{:+.1f}},{{:+.1f}} | rot {{:5.1f}}"
+                 " | up {{}}".format(still, fwd, side, rot_ema, up))
         await asyncio.sleep_ms(20)
 """,
     },
-    "posture": {
-        "args": [],
+    "offset": {
+        "args": [("secs", float, 20.0)],
         "code": """
 async def run():
-    # Anatomical frame (measured worn): upright = 0; bending FORWARD is
-    # positive, +90 = lying on the belly; bending BACK negative, -90 =
-    # lying on the back. Upright gravity sits on X- for this mounting.
-    send("posture: live. sit well, slouch fwd/back, lean side, walk")
-    if not Posture.has_ref():
-        send("NO UPRIGHT REFERENCE — sit the way you'd like to be reminded "
-             "toward, hold still, then run `setref`")
-    warned = False
+    # YOUR MOUNT OFFSET, measured directly. Stand up and stay standing for
+    # {secs}s. Standing, your spine is near true vertical, so whatever lean
+    # this reads is not your posture — it is where the strap hangs.
+    #
+    # This is the same measurement the seed takes for free from every walk to
+    # the coffee machine; doing it deliberately once tells you what to expect
+    # and whether the walk estimate agrees. Run it again after re-mounting to
+    # see how much placement actually varies.
+    #
+    # The two numbers it prints are ZERO_FWD and ZERO_SIDE in the seed.
+    GRAV_TAU_S = 1.0
+    grav, last_t = None, time.ticks_ms() / 1000.0
+    send("offset: STAND UP and hold still for {secs}s...")
+    t0 = time.ticks_ms() / 1000.0
+    fwds = Calc.Running(200)
+    sides = Calc.Running(200)
     while True:
-        Posture.feed(Imu.getAccel(), Imu.getGyro())
-        a = Posture.angle()
-        lean = Posture.lean()
-        up = Posture.up_axis()
-        if lean:
-            send("fwd/back={:+.0f} side={:+.0f} | vs-ref={} | up={} | still={:.1f}s".format(
-                lean[0], lean[1], a if a is not None else "no-ref",
-                up, Posture.still_s()))
-        if up and up != "X-" and Posture.still_s() > 3.0 and not warned:
-            send("MOUNTING CHECK: upright should read up=X-, but I read "
-                 "up={} — is the stick worn with the X axis along the spine?".format(up))
-            warned = True
-        await asyncio.sleep_ms(1000)
+        now = time.ticks_ms() / 1000.0
+        dt = now - last_t
+        last_t = now
+        if dt < 0 or dt > 5.0:
+            dt = 0.0
+        a = Imu.getAccel()
+        if grav is None:
+            grav = list(a)
+        k = min(1.0, dt / GRAV_TAU_S)
+        for i in range(3):
+            grav[i] += k * (a[i] - grav[i])
+        if now - t0 > 2.0:           # let gravity converge before counting
+            fwds.push(math.degrees(math.atan2(grav[2], -grav[0])))
+            sides.push(math.degrees(math.atan2(grav[1], -grav[0])))
+        if now - t0 > {secs}:
+            send("=== ZERO_FWD = {{:+.1f}}  ZERO_SIDE = {{:+.1f}}  "
+                 "(spread {{:.1f}},{{:.1f}} over {{}} samples) ===".format(
+                     fwds.mean(), sides.mean(), fwds.std(), sides.std(),
+                     len(fwds.buf)))
+            send("put those in the seed's ZERO_FWD / ZERO_SIDE")
+            while True:
+                await asyncio.sleep(1)
+        await asyncio.sleep_ms(20)
 """,
     },
-    "setref": {
+    "imulog": {
         "args": [],
         "code": """
 async def run():
-    send("capturing upright in 3s — sit the way you mean it...")
-    t0 = time.ticks_ms()
-    while time.ticks_ms() - t0 < 3000:
-        Posture.feed(Imu.getAccel(), Imu.getGyro())
-        await asyncio.sleep_ms(20)
-    ok = Posture.set_upright()
-    send("upright captured" if ok else "capture FAILED (no gravity read yet)")
+    # Raw IMU, unsmoothed — the noise floor the sense sits on. STILL_DPS
+    # should be comfortably above the gyro magnitude you see here holding
+    # still, and comfortably below what a real movement produces.
+    send("imulog: raw accel + gyro means")
+    WINDOW = 30
+    ba, bg = [], []
     while True:
-        Posture.feed(Imu.getAccel(), Imu.getGyro())
-        a = Posture.angle()
-        send("angle={} deg | still={:.1f}s".format(
-            a if a is not None else "no-ref", Posture.still_s()))
-        await asyncio.sleep_ms(1000)
+        ax, ay, az = Imu.getAccel()
+        gx, gy, gz = Imu.getGyro()
+        ba.append((ax, ay, az))
+        bg.append((gx, gy, gz))
+        if len(ba) > WINDOW:
+            ba.pop(0)
+            bg.pop(0)
+        if len(ba) == WINDOW:
+            n = WINDOW
+            ma = [sum(v[i] for v in ba) / n for i in range(3)]
+            mg = [sum(v[i] for v in bg) / n for i in range(3)]
+            mag = math.sqrt(sum(x * x for x in mg))
+            send("accel=({:.3f},{:.3f},{:.3f}) gyro=({:.1f},{:.1f},{:.1f}) "
+                 "|gyro|={:.1f}".format(ma[0], ma[1], ma[2],
+                                        mg[0], mg[1], mg[2], mag))
+            ba.clear()
+            bg.clear()
+        await asyncio.sleep_ms(10)
 """,
     },
     "cricket": {
@@ -138,28 +215,6 @@ async def run():
         await asyncio.sleep_ms(4000)
 """,
     },
-    "verbs": {
-        "args": [],
-        "code": """
-async def run():
-    # Movement-verb tuning, worn: sit still, fidget, shift your lean,
-    # stretch big, stand up and walk off — each settled episode gets named.
-    # No upright reference needed (verbs compare pose-to-pose). Thresholds
-    # to tune in organs.py: SHIFT_DEG, STRETCH_DEG, AWAY_S, EP_SETTLE_S.
-    send("verbs: move and watch. fidget / lean / stretch / walk off...")
-    n = 0
-    while True:
-        Posture.feed(Imu.getAccel(), Imu.getGyro())
-        v = Posture.verb()
-        if v:
-            send("{}({})".format(v[0], v[1]) if v[1] else v[0])
-        n += 1
-        if n % 150 == 0:   # every ~3s at 50Hz: the ongoing state
-            send("... {} | still {:.0f}s | lean fwd {:+.0f} side {:+.0f}".format(
-                Posture.flavor(), Posture.still_s(), *(Posture.lean() or (0, 0))))
-        await asyncio.sleep_ms(20)
-""",
-    },
     "button": {
         "args": [],
         "code": """
@@ -169,19 +224,9 @@ async def run():
     # reported twice and never missed by a slow poll. last_s() is seconds
     # since the most recent press, and is NOT consumed by reading it.
     #
-    # Three things to check:
-    #   1. every deliberate press registers exactly once
-    #   2. the BOOT line above says which edge is live — btn=cb:WAS_PRESSED
-    #      (fires on the press) | cb:WAS_CLICKED (waits for the release) |
-    #      poll:wasPressed | poll:wasClicked | none. Presses were confirmed
-    #      landing exactly once on 2026-07-30; the token still says which
-    #      edge did it.
-    #   3. FAST presses. M5.update() samples the pin at 20 Hz in heartbeat(),
-    #      so a press+release inside one 50 ms window has no edge to detect —
-    #      by callback or by polling alike. Two presses that close also
-    #      collapse into one True, by design. This recipe deliberately does
-    #      NOT call M5.update() itself, so what you measure is what the seed
-    #      gets.
+    # Confirmed working on hardware 2026-07-30 with btn=cb:WAS_PRESSED, so
+    # the driver callback fires on the press edge. The BOOT line still names
+    # which edge is live.
     send("button test: press BtnA. Slowly first, then as fast as you can.")
     n = 0
     while True:
@@ -212,19 +257,6 @@ async def run():
         await asyncio.sleep_ms(6000)
 """,
     },
-    "off": {
-        "args": [],
-        "code": """
-async def run():
-    try:
-        Speaker.end()
-    except Exception:
-        pass
-    send("silenced")
-    while True:
-        await asyncio.sleep(1)
-""",
-    },
     "vbat": {
         "args": [],
         "code": """
@@ -243,8 +275,10 @@ async def run():
 async def run():
     # Charging-flag forensics: isCharging() flipping while plugged in is
     # benign top-off cycling ONLY if VBUS holds ~5V through the flip. VBUS
-    # collapsing with the flip = the 5V input really cut out (flaky jack,
-    # or a smart charger's low-current auto-off).
+    # collapsing with the flip = the 5V input really cut out (flaky jack, a
+    # smart charger's low-current auto-off, or a bank that has decided you
+    # are not drawing enough to be worth staying awake for — measured
+    # 2026-07-30, which is what the PowerBoost replaced).
     send("power: 1Hz vbus/vbat/chg — watch VBUS when chg flips")
     try:
         M5.Power.getBatteryCurrent()
@@ -266,31 +300,17 @@ async def run():
         await asyncio.sleep_ms(1000)
 """,
     },
-    "imulog": {
+    "off": {
         "args": [],
         "code": """
 async def run():
-    send("imulog: live accel + gyro means")
-    WINDOW = 30
-    ba = []
-    bg = []
+    try:
+        Speaker.end()
+    except Exception:
+        pass
+    send("silenced")
     while True:
-        ax, ay, az = Imu.getAccel()
-        gx, gy, gz = Imu.getGyro()
-        ba.append((ax, ay, az))
-        bg.append((gx, gy, gz))
-        if len(ba) > WINDOW:
-            ba.pop(0)
-            bg.pop(0)
-        if len(ba) == WINDOW:
-            n = WINDOW
-            ma = [sum(v[i] for v in ba) / n for i in range(3)]
-            mg = [sum(v[i] for v in bg) / n for i in range(3)]
-            send("accel=({:.3f},{:.3f},{:.3f}) gyro=({:.1f},{:.1f},{:.1f})".format(
-                ma[0], ma[1], ma[2], mg[0], mg[1], mg[2]))
-            ba.clear()
-            bg.clear()
-        await asyncio.sleep_ms(10)
+        await asyncio.sleep(1)
 """,
     },
 }

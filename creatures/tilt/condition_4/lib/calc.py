@@ -428,10 +428,44 @@ class Flow:
 
 
 
+class Ring:
+    """A bounded list: push drops the oldest once full. The container half of
+    what Mem used to be — Mem bundled a bounded buffer together with a
+    registry of named slots, and those are two different jobs. This is just
+    the buffer. Persisting it across a rewrite is keep()'s job, and `maxlen`
+    is a constructor argument here so a window cannot exist without stating
+    how big it is.
+
+    Takes anything, unlike Running, which maintains numeric sums."""
+
+    def __init__(self, n):
+        self.n = int(n)
+        self.buf = []
+
+    def push(self, v):
+        self.buf.append(v)
+        if len(self.buf) > self.n:
+            self.buf.pop(0)
+        return v
+
+    def recent(self, n=None):
+        return list(self.buf) if n is None else list(self.buf[-n:])
+
+    def latest(self):
+        return self.buf[-1] if self.buf else None
+
+    def clear(self):
+        del self.buf[:]      # IN PLACE: rebinding orphans whatever keep() holds
+
+    def __len__(self):
+        return len(self.buf)
+
+
 class Calc:
     """Namespace injected into the instinct scope (like Imu / Synth / Mem)."""
     OneEuro = OneEuro
     Running = Running
+    Ring = Ring
     Onset = Onset
     Periodicity = Periodicity
     AlphaBeta = AlphaBeta
