@@ -17,17 +17,20 @@ Two atan2s are not that. So the sense lives in seed_instinct.py, where the
 soul can read it, retune it, and be wrong about it on purpose.
 
 What that buys: a change to what "still" means is a spine push instead of a
-reflash. What it costs: the sense's state is now the instinct's to keep — and
-keep() is what it keeps it with.
+reflash. What it costs: the sense's state is now the instinct's to carry —
+and mem is what it carries it in.
 
 NO Mem IN THIS ARM either (2026-07-31). Mem bundled two unrelated jobs —
 "this survives my rewrites" and "this is a bounded ring buffer" — and split
-apart, both get simpler. keep() does the first, by REFERENCE rather than by
-copy, so a mutation persists the instant it happens: no push, no flush, no
-restore, and nothing to forget. Calc.Ring does the second, with maxlen as a
-constructor argument so a window cannot exist without stating its size. The
-arbitrary MAX_SLOTS = 8 and its silent drop go with the registry that needed
-them. Mem is untouched everywhere else — the other creatures use it and the
+apart, both get simpler. `mem` does the first: one plain dict, injected by
+reference, so a mutation persists the instant it happens — no push, no
+flush, no restore, and no named-slot registry either. (A keep(name, default)
+registry was tried between the two, 2026-07-31, and dropped the same day:
+handing out MANY objects re-created the scalar/rebinding traps one dict does
+not have.) Calc.Ring does the second, with maxlen as a constructor argument
+so a window cannot exist without stating its size. The arbitrary
+MAX_SLOTS = 8 and its silent drop go with the registry that needed them.
+Mem is untouched everywhere else — the other creatures use it and the
 earlier arms are frozen.
 
 This file therefore reads no IMU at all and holds no body state.
@@ -38,11 +41,12 @@ Runtime provides to instinct code:
   Button           the explicit channel: Button.pressed() / .last_s()
   IV               this instinct's version number: a fresh spine session
                    always starts at v1, every rewrite after that is v2, v3...
-  keep(name, dflt) the SAME object every instinct that asks for that name.
-                   Module scope here, so it outlives every hot-swap and dies
-                   with the power. What it hands out is what persists: a float
-                   can only be REBOUND, so counters live in one mutable dict,
-                   while lists and windows get their own name.
+  mem              ONE plain dict, the same dict for every instinct: it
+                   outlives every hot-swap and dies with the power. Item
+                   assignment writes into it, so mem["n"] += 1 and
+                   mem["h_moves"] = [] both persist; only copying a value
+                   into a local loses it. Declare defaults with
+                   mem.setdefault(...) at the top of run().
   Calc             NARROWED to OneEuro / Running / Onset / Ring
   asyncio, time, struct, math, M5, Imu, Speaker
 
@@ -106,46 +110,38 @@ from calc import Calc
 # (the heartbeat ticks it every 50 ms).
 Speaker = M5.Speaker
 
-# ── keep(): what an instinct carries across its own rewrites ────────────────
+# ── mem: what an instinct carries across its own rewrites ───────────────────
 #
-# Module scope, so it outlives every hot-swap and dies with the power — the
-# same lifetime as Mem, but by REFERENCE rather than by copy. The instinct
-# holds the very object this dict holds, so a mutation is persisted the
-# instant it happens. There is nothing to flush and nothing to restore.
+# ONE plain dict, module scope: it outlives every hot-swap and dies with the
+# power. The instinct holds the very dict this name holds, so a mutation is
+# persisted the instant it happens — there is nothing to flush and nothing to
+# restore, and because item assignment writes INTO the dict, even
+# mem["h_moves"] = [] persists. The scalar trap that keep() had (a kept float
+# could only be rebound, never changed) does not exist here: mem["n"] += 1
+# writes back through the dict every time. The one way left to lose state is
+# to copy a value into a local and update the local — which at least LOOKS
+# wrong when written.
 #
-# THE ONE RULE: what keep() hands out is what persists. keep("n", 0.0) hands
-# out a FLOAT, and `n += 1` rebinds the local name to a new float that this
-# registry never sees. Only MUTABLE things persist by themselves — which is
-# why a bag of counters has to be one dict (mutate led["n"], not n) while a
-# list or a Ring can be its own keep.
-#
-# Cheap, but not free: the default is constructed on every call and thrown
-# away when the name already exists. Call keep() at the top of run(), never
-# inside a loop.
-_kept = {}
+# Keys are never deleted: a rewrite that merely forgot one must not be able
+# to destroy hours of accumulated history over a typo. A few stale bytes for
+# one wearing is the cheaper mistake. Instincts declare defaults with
+# mem.setdefault(...) at the top of run() — never in a loop, since the
+# default is constructed on every call and discarded when the key exists.
+MEM = {}
+_mem_shape = None      # sorted key list at the last swap, for the diff below
 
 
-def keep(name, default):
-    """The same object, every instinct that asks for this name."""
-    if name not in _kept:
-        _kept[name] = default
-        return _kept[name]
-    obj = _kept[name]
-    # A rewrite may declare fields the previous one never wrote. Merge them
-    # in, or the first read of a new key is a KeyError thrown at a reflection
-    # — the worst possible moment. ADDITIVE ONLY: keys this code no longer
-    # declares are reported but NOT deleted, because a rewrite that merely
-    # forgot one would otherwise destroy hours of accumulated history over a
-    # typo. A few stale bytes for one wearing is the cheaper mistake.
-    if isinstance(default, dict) and isinstance(obj, dict):
-        added = [k for k in default if k not in obj]
-        gone = [k for k in obj if k not in default]
-        for k in added:
-            obj[k] = default[k]
-        if added or gone:
-            send("LOG: my ledger changed shape — gained {}, no longer "
-                 "declares {}".format(added or "nothing", gone or "nothing"))
-    return obj
+def _announce_mem_shape():
+    """Journal it when the set of carried keys grew since the last swap, so
+    a later reflection can see WHEN its memory changed shape. Additive only:
+    nothing here (or anywhere) deletes keys."""
+    global _mem_shape
+    keys = sorted(MEM.keys())
+    if _mem_shape is not None:
+        gained = [k for k in keys if k not in _mem_shape]
+        if gained:
+            send("LOG: my memory changed shape — gained {}".format(gained))
+    _mem_shape = keys
 
 
 def usb_present():
@@ -513,11 +509,19 @@ INSTINCT_ENV = {
     # Periodicity and AlphaBeta track beats at 50-200 bpm, and nothing this
     # animal cares about happens at a tempo. A tool in scope is an invitation
     # to use it.
-    "keep": keep,
+    "mem": MEM,
     "Calc": type("Calc", (), {"OneEuro": Calc.OneEuro,
                               "Running": Calc.Running,
                               "Onset": Calc.Onset,
-                              "Ring": Calc.Ring}),
+                              "Ring": Calc.Ring,
+                              "Gate": Calc.Gate}),
+    # Gate ADDED 2026-07-31 with the mem arm: the seed's stillness sense
+    # keeps its edge inside a Gate stored in mem, so this one is not an
+    # invitation but a dependency — remove it and the seed crashes at its
+    # first setdefault. The other four are invitations: the seed currently
+    # uses none of them, but Running is exactly what the walk-offset recipe
+    # in its experience calls for, and Ring is the bounded window it will
+    # want the day it keeps recent poses.
 }
 
 DEFAULT_INSTINCT = """
@@ -553,6 +557,7 @@ async def run_instinct(code):
 
 async def swap_instinct(code):
     global current_task
+    _announce_mem_shape()
     if current_task:
         current_task.cancel()
         try:

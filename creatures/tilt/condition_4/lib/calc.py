@@ -461,6 +461,70 @@ class Ring:
         return len(self.buf)
 
 
+# Calc.Gate — hysteresis + hold-time state gate.
+# Drop into the firmware Calc module alongside OneEuro / Running / Ring / Onset.
+#
+# Design rules, in order of importance:
+#   * The gate knows nothing about stillness or movement — only above and
+#     below. Judgment stays in the thresholds the instinct passes in.
+#   * `since` is the TRUE edge: the moment the current state began, not the
+#     moment the hold confirmed it. Durations computed from it are exact,
+#     undistorted by the debounce.
+#   * It is safe to keep(): all state is instance attributes, so a kept
+#     gate carries the stillness edge across instinct rewrites whole.
+
+
+class Gate:
+    """state is True while the signal last confirmed above `high`,
+    False while below `low`; between the two it stays put, so a signal
+    hovering at one threshold cannot chatter.
+
+    A crossing must hold `min_hold_s` before it is confirmed. update()
+    then returns ("rise"|"fall", t_edge, ended_s) exactly once, where
+    t_edge is when the crossing BEGAN and ended_s is the exact duration
+    of the state that just closed. Otherwise it returns None.
+
+    The first sample is adopted silently (no phantom edge at boot); a
+    first sample inside the dead band adopts False.
+    """
+
+    def __init__(self, low, high, min_hold_s=0.0):
+        self.low = low
+        self.high = high
+        self.hold = min_hold_s
+        self.state = None      # True above / False below; None = never fed
+        self.since = None      # timestamp the current state began
+        self._cand = None      # (proposed_state, t_began) of an unconfirmed crossing
+
+    def update(self, x, now):
+        raw = self.state
+        if x >= self.high:
+            raw = True
+        elif x <= self.low:
+            raw = False
+        # between low and high: raw keeps the current state (the dead band)
+
+        if self.state is None:             # first look: adopt, don't report
+            self.state = bool(raw)
+            self.since = now
+            return None
+
+        if raw == self.state:
+            self._cand = None              # the crossing gave up
+            return None
+
+        if self._cand is None or self._cand[0] != raw:
+            self._cand = (raw, now)
+        if now - self._cand[1] >= self.hold:
+            t_edge = self._cand[1]
+            ended = t_edge - self.since
+            self.state, self.since, self._cand = raw, t_edge, None
+            return ("rise" if raw else "fall", t_edge, ended)
+        return None
+
+
+
+
 class Calc:
     """Namespace injected into the instinct scope (like Imu / Synth / Mem)."""
     OneEuro = OneEuro
@@ -472,3 +536,4 @@ class Calc:
     Madgwick = Madgwick
     Pose = Madgwick    # alias so older instincts keep working
     Flow = Flow
+    Gate = Gate
