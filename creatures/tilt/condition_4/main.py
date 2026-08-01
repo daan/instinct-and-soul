@@ -534,7 +534,7 @@ async def run():
 async def run_instinct(code):
     env = dict(INSTINCT_ENV)
     # Which instinct am I? The creature compares this against the version it
-    # stored in its ledger to tell a REWRITE (version changed) from a re-push
+    # stored in its mem to tell a REWRITE (version changed) from a re-push
     # or reconnect (version identical). 0 = the seed, before any IV: arrived.
     env["IV"] = instinct_version
     try:

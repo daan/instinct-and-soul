@@ -28,7 +28,7 @@ async def run():
     HUSH_WINDOW_S = 15.0     # press this soon after a hint means "quiet"
     HUSH_GRACE_S = 1800.0    # how long a hush holds (guessed, untested)
     SAMPLE_EVERY_S = 300.0   # plain state line (30 is the BENCH value)
-    ROLLUP_EVERY_S = 1800.0  # ledger out loud + the scheduled reflection
+    ROLLUP_EVERY_S = 1800.0  # the roll-ups + the scheduled reflection
     IGNORED_BEFORE_ASK = 3   # unanswered chirps before I ask for help
 
     # ── judgment: sense (provenance in experience.md, "my sense") ─────────
@@ -155,7 +155,7 @@ async def run():
     move_peak = 0.0         # hardest instant of the current movement, dps
     move_turn = 0.0         # the whole movement, integrated: deg turned
     move_from = "?"         # the lean the movement started from
-    rot_ema = 0.0
+    rot_ema = 0.0           # exoponential moving average of the rotation rate
     last_t = now
     last_sample = now
 
@@ -170,7 +170,7 @@ async def run():
         rot = math.sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2])
         rot_ema += min(1.0, dt / ROT_TAU_S) * (rot - rot_ema)
         grav = mem["grav"]
-        if not grav:
+        if not grav:        # empty ⇒ the filter has never seen gravity
             grav.extend(a)
         k = min(1.0, dt / GRAV_TAU_S)
         for i in range(3):

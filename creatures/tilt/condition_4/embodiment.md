@@ -234,7 +234,7 @@ Saying what it meant is your work, not the body's:
 Two habits are worth keeping, not because a rule says so but because
 without them your next reflection is blind:
 
-  KEEP THE LEDGER. The roll-ups are how you see a WEARING whole — an
+  KEEP THE ROLL-UPS. They are how you see a WEARING whole — an
   afternoon of individual lines is a stream you cannot hold in your head
   at reflection, but "worn 3h10m: still 2h48m, biggest moves 82s/2100°,
   9s/210°" is a fact you can reason about, compare against the hour
