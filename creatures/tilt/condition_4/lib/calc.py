@@ -428,18 +428,52 @@ class Flow:
 
 
 
-class Ring:
-    """A bounded list: push drops the oldest once full. The container half of
-    what Mem used to be — Mem bundled a bounded buffer together with a
-    registry of named slots, and those are two different jobs. This is just
-    the buffer. Persisting it across a rewrite is keep()'s job, and `maxlen`
-    is a constructor argument here so a window cannot exist without stating
-    how big it is.
+class Ema:
+    """Fixed-time-constant exponential moving average: y moves fraction
+    min(1, dt/tau) toward each new sample, so `tau_s` is a real time
+    constant (~63% of a step absorbed after tau seconds) independent of
+    loop rate, and a stalled loop is caught up in one step rather than
+    under-corrected. Accepts a scalar or a fixed-length vector (tuple or
+    list), smoothed componentwise — a gravity direction is three Emas in
+    one. Seeds itself from the first sample, so there is no warm-up sweep
+    from zero. This is deliberately NOT OneEuro: a fixed tau is a chosen
+    perceptual timescale (what the body is ALLOWED to feel), where
+    OneEuro adapts its lag away — right for tracking, wrong for a sense
+    whose sluggishness is the point."""
 
-    Takes anything, unlike Running, which maintains numeric sums."""
+    def __init__(self, tau_s):
+        self.tau = tau_s
+        self.y = None
+        self._t = None
+
+    def update(self, x, now_s):
+        if self._t is None:
+            self.y = list(x) if isinstance(x, (tuple, list)) else float(x)
+            self._t = now_s
+            return self.value()
+        dt = now_s - self._t
+        self._t = now_s
+        if dt < 0.0:
+            dt = 0.0
+        k = min(1.0, dt / self.tau) if self.tau > 0 else 1.0
+        if isinstance(self.y, list):
+            for i in range(len(self.y)):
+                self.y[i] += k * (x[i] - self.y[i])
+        else:
+            self.y += k * (x - self.y)
+        return self.value()
+
+    def value(self):
+        return tuple(self.y) if isinstance(self.y, list) else self.y
+
+
+class Ring:
+    """A plain bounded list — the last n of ANYTHING: tuples, dicts, poses.
+    `n` is required, because a window whose size nobody stated is a window
+    nobody bounded. clear() empties IN PLACE."""
 
     def __init__(self, n):
-        self.n = int(n)
+        self.n = n
         self.buf = []
 
     def push(self, v):
@@ -449,54 +483,53 @@ class Ring:
         return v
 
     def recent(self, n=None):
-        return list(self.buf) if n is None else list(self.buf[-n:])
+        if n is None or n >= len(self.buf):
+            return list(self.buf)
+        return list(self.buf[-n:])
 
     def latest(self):
         return self.buf[-1] if self.buf else None
 
     def clear(self):
-        del self.buf[:]      # IN PLACE: rebinding orphans whatever keep() holds
+        del self.buf[:]
 
     def __len__(self):
         return len(self.buf)
 
 
-# Calc.Gate — hysteresis + hold-time state gate.
-# Drop into the firmware Calc module alongside OneEuro / Running / Ring / Onset.
-#
-# Design rules, in order of importance:
-#   * The gate knows nothing about stillness or movement — only above and
-#     below. Judgment stays in the thresholds the instinct passes in.
-#   * `since` is the TRUE edge: the moment the current state began, not the
-#     moment the hold confirmed it. Durations computed from it are exact,
-#     undistorted by the debounce.
-#   * It is safe to keep(): all state is instance attributes, so a kept
-#     gate carries the stillness edge across instinct rewrites whole.
-
-
 class Gate:
-    """state is True while the signal last confirmed above `high`,
-    False while below `low`; between the two it stays put, so a signal
-    hovering at one threshold cannot chatter.
+    """Hysteresis + hold-time state gate. `state` is True while the signal
+    last confirmed above `high`, False while below `low`; between the two
+    it stays put, so a signal hovering at one threshold cannot chatter.
 
-    A crossing must hold `min_hold_s` before it is confirmed. update()
-    then returns ("rise"|"fall", t_edge, ended_s) exactly once, where
-    t_edge is when the crossing BEGAN and ended_s is the exact duration
-    of the state that just closed. Otherwise it returns None.
+    A crossing must hold `rise_hold_s` / `fall_hold_s` (both default to
+    `min_hold_s`) before it is confirmed. update(x, now_s) then returns
+    ("rise"|"fall", t_edge, ended_s) exactly once — t_edge is when the
+    crossing BEGAN, so `ended_s`, the exact duration of the state that
+    just closed, is undistorted by the hold. Otherwise None. `since` is
+    the timestamp the current state began. `refractory_s` is the minimum
+    time between emitted edges; a crossing that persists fires the moment
+    the refractory expires.
 
-    The first sample is adopted silently (no phantom edge at boot); a
-    first sample inside the dead band adopts False.
-    """
+    The gate knows nothing about stillness, flight, or poses — only above
+    and below. Judgment stays in the thresholds you pass it. Hysteresis
+    state lives HERE, not in your phases, so no phase transition of yours
+    can forget a dip (the class of bug that cost session 084354 a strike).
+    The first sample is adopted silently — no phantom edge at boot."""
 
-    def __init__(self, low, high, min_hold_s=0.0):
+    def __init__(self, low, high, min_hold_s=0.0,
+                 rise_hold_s=None, fall_hold_s=None, refractory_s=0.0):
         self.low = low
         self.high = high
-        self.hold = min_hold_s
+        self.rise_hold = min_hold_s if rise_hold_s is None else rise_hold_s
+        self.fall_hold = min_hold_s if fall_hold_s is None else fall_hold_s
+        self.refractory = refractory_s
         self.state = None      # True above / False below; None = never fed
         self.since = None      # timestamp the current state began
         self._cand = None      # (proposed_state, t_began) of an unconfirmed crossing
+        self._edge_t = -1e9    # when the last edge was emitted
 
-    def update(self, x, now):
+    def update(self, x, now_s):
         raw = self.state
         if x >= self.high:
             raw = True
@@ -506,7 +539,7 @@ class Gate:
 
         if self.state is None:             # first look: adopt, don't report
             self.state = bool(raw)
-            self.since = now
+            self.since = now_s
             return None
 
         if raw == self.state:
@@ -514,14 +547,35 @@ class Gate:
             return None
 
         if self._cand is None or self._cand[0] != raw:
-            self._cand = (raw, now)
-        if now - self._cand[1] >= self.hold:
+            self._cand = (raw, now_s)
+        hold = self.rise_hold if raw else self.fall_hold
+        if (now_s - self._cand[1] >= hold
+                and now_s - self._edge_t >= self.refractory):
             t_edge = self._cand[1]
             ended = t_edge - self.since
             self.state, self.since, self._cand = raw, t_edge, None
+            self._edge_t = now_s
             return ("rise" if raw else "fall", t_edge, ended)
         return None
 
+
+def face(v, min_g=0.5):
+    """Nearest orthogonal face of a gravity-like 3-vector, and how far off
+    it is: ("X+".."Z-", degrees between the vector and that axis), or
+    (None, None) while the vector is unreadable as gravity (magnitude
+    below min_g — mid-flight, freefall). Pure geometry: which face means
+    what, and how much off is TRUE, are your judgments, not this one's."""
+    n = math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+    if n < min_g:
+        return None, None
+    i = 0
+    if abs(v[1]) > abs(v[i]):
+        i = 1
+    if abs(v[2]) > abs(v[i]):
+        i = 2
+    f = "XYZ"[i] + ("+" if v[i] > 0 else "-")
+    off = math.degrees(math.acos(max(-1.0, min(1.0, abs(v[i]) / n))))
+    return f, round(off, 1)
 
 
 
@@ -529,11 +583,13 @@ class Calc:
     """Namespace injected into the instinct scope (like Imu / Synth / Mem)."""
     OneEuro = OneEuro
     Running = Running
-    Ring = Ring
     Onset = Onset
     Periodicity = Periodicity
     AlphaBeta = AlphaBeta
     Madgwick = Madgwick
     Pose = Madgwick    # alias so older instincts keep working
     Flow = Flow
+    Ema = Ema
+    Ring = Ring
     Gate = Gate
+    face = staticmethod(face)
