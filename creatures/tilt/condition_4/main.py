@@ -73,7 +73,7 @@ M5.begin()
 # We do NOT use the built-in Speaker here — the voice is the Grove synth.
 
 # UIFlow firmware doesn't put /flash/lib on sys.path by default. Our flashed
-# creature drivers land there (creatures/kata_master/lib/*.py -> /lib/ via
+# creature drivers land there (creatures/tilt/condition_4/lib/*.py -> /lib/ via
 # mpremote, which is /flash/lib/ at runtime), so insert it before importing.
 import sys as _sys
 if "/flash/lib" not in _sys.path:
