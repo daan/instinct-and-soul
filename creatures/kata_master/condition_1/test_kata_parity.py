@@ -5,6 +5,10 @@ through rot_dps only (accel held at 1 g) at 200 Hz, matching the seed loop.
 speed01 = rot/600, so rot = speed01 * 600."""
 
 import math
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 from calc import Calc
 from kata_sense import KataSense
 

@@ -8,12 +8,18 @@ tuned in the sim gets re-auditioned here) and find the VOLUME the battery can
 afford — every sound recipe reports battery-voltage sag while playing.
 
 Run:
-    tune creatures/kata_master
+    tune creatures/kata_master/condition_1
 
 Feel gates (the stage-1/2 calibration experiments, no spine needed):
+    deploy kata                     the condition_1 kata seed, live
     deploy swoosh                   the 1_swoosh gust seed, live
     deploy tones                    the 2_tones rest-tone seed, live
     deploy <path>                   any seed file
+
+Live bench (run `stetho` in a second terminal for the dashboard):
+    stetho [ip] | stetho off        arm/detach the organ stream (UDP-OSC
+                                    :9001) without killing the running
+                                    deploy — an overlay, not a replacement
 
 Volume / energy:
     swooshvol                       one gust at CC7 25/50/75/100/127 + vbat sag
@@ -40,15 +46,17 @@ from recipes import RECIPES, INSTINCT_IDLE
 
 
 PLACEHOLDER = (
-    "deploy swoosh|tones|<path> | synthcheck | swooshvol | tonevol "
-    "| swoosh [vol] [reps] | tones [vol] | mastervol [v] | vbat "
-    "| note [ch] [n] [ms] [vel] | program [ch] [prog] | imulog | off"
+    "deploy kata|swoosh|tones|<path> | stetho [ip|off] | synthcheck "
+    "| swooshvol | tonevol | swoosh [vol] [reps] | tones [vol] "
+    "| mastervol [v] | vbat | note [ch] [n] [ms] [vel] "
+    "| program [ch] [prog] | imulog | off"
 )
 
-# Feel-gate seeds the tuner can deploy directly — the stage-1/2 calibration
-# experiments, run without a spine session. The sim series stays the
-# canonical source (the same files drive the offline bench).
+# Seeds the tuner can deploy directly, no spine session needed: the real
+# kata seed, plus the stage-1/2 feel-gate experiments (whose sim series
+# stays the canonical source — the same files drive the offline bench).
 DEPLOY_SHORTCUTS = {
+    "kata": "creatures/kata_master/condition_1/seed_instinct.py",
     "swoosh": "sim_creatures/kata-master/1_swoosh/seed_instinct.py",
     "tones": "sim_creatures/kata-master/2_tones/seed_instinct.py",
 }
@@ -61,6 +69,13 @@ def clamp(v, lo, hi):
 class KataMasterTuner(TuneAppBase):
     INITIAL_INSTINCT = INSTINCT_IDLE
     STATUS_LABEL = "kata_master"
+
+    def __init__(self):
+        super().__init__()
+        # The most recent deploy/recipe: overlay commands (stetho) prepend
+        # their few lines to it, so arming the stethoscope doesn't kill the
+        # seed you're watching.
+        self._stream_code = INSTINCT_IDLE
 
     def compose(self) -> ComposeResult:
         yield Static("● disconnected", id="status")
@@ -85,6 +100,10 @@ class KataMasterTuner(TuneAppBase):
         def arg(i, lo, hi, default):
             return clamp(parts[i], lo, hi) if len(parts) > i else default
 
+        # overlay commands run a few lines, then fall through into the
+        # last deploy so the seed keeps running
+        overlay = cmd in ("stetho",)
+
         try:
             if cmd == "deploy":
                 if len(parts) < 2:
@@ -102,6 +121,31 @@ class KataMasterTuner(TuneAppBase):
                     self.log_msg("seed has a syntax error: {}".format(e), style="yellow")
                     return
                 self.log_msg("deploying {} ({} bytes)".format(path, len(code)), style="cyan")
+
+            elif cmd == "stetho":
+                if len(parts) > 1 and parts[1].lower() == "off":
+                    code = ("import stethoscope\n"
+                            "stethoscope.detach()\n"
+                            "send('stethoscope off')\n") + self._stream_code
+                    self.log_msg("stethoscope off", style="cyan")
+                else:
+                    ip = None
+                    if len(parts) > 1 and parts[1].lower() != "on":
+                        ip = parts[1]
+                    else:
+                        try:
+                            ip = self.board_ws.local_address[0]
+                        except Exception:
+                            pass
+                    if not ip or ip == "0.0.0.0":
+                        self.log_msg("can't detect my ip — use: stetho <ip>", style="yellow")
+                        return
+                    code = ("import stethoscope\n"
+                            "stethoscope.attach(\"{ip}\", 9001)\n"
+                            "send('stethoscope -> {ip}:9001')\n").format(ip=ip) \
+                           + self._stream_code
+                    self.log_msg("organ stream -> {}:9001 — run `stetho` in "
+                                 "another terminal".format(ip), style="cyan")
 
             elif cmd == "synthcheck":
                 code = format_recipe(RECIPES["synthcheck"])
@@ -165,6 +209,8 @@ class KataMasterTuner(TuneAppBase):
             self.log_msg("error: {}".format(e), style="yellow")
             return
 
+        if not overlay:
+            self._stream_code = code
         await self.board_ws.send(code)
 
 

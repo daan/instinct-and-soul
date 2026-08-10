@@ -2,9 +2,9 @@
 
 The device series for kata-master: an M5StickS3 on the back of the hand
 (X toward the wrist) with an M5 Unit-Synth (SAM2695) on the Grove port.
-Detection lives ON the device (the Kata/Motion/Handling organs), the voice
-is MIDI over a wire — no network in the sound path; WiFi carries only the
-journal.
+Detection lives ON the device — KataSense (lib/kata_sense.py), mechanism in
+the library, judgment numbers in the seed — the voice is MIDI over a wire —
+no network in the sound path; WiFi carries only the journal.
 
 ## The game
 
@@ -63,18 +63,21 @@ phrase before anything tries to answer one.
 ## Structure: every condition is a COMPLETE, self-contained creature
 
     creatures/kata_master/
-      condition_1/            ← everything: runtime + organs + mind + tuner
-        main.py                 the runtime (wifi, spine link, hot-swap)
-        lib/                    synth.py, organs.py, calc.py, creature_mem.py
-        organs.py -> lib/organs.py   (internal symlink: sim bench reads the
-                                      root, flash reads lib/ — one file)
-        seed_instinct.py        the mind: seed + prompts
-        character.md, system_prompt.md, seed_experience.md, creature.toml
+      condition_1/            ← everything: runtime + senses + mind + tuner
+        main.py                 the runtime (wifi, spine link, hot-swap,
+                                mem — ONE plain dict surviving hot-swaps)
+        lib/                    synth.py, calc.py, kata_sense.py,
+                                stethoscope.py (bench organ stream)
+        seed_instinct.py        the mind: constructs KataSense with its own
+                                judgment numbers; mechanism stays in lib
+        character.md, embodiment.md, seed_experience.md, creature.toml
         tune.py, recipes.py     hardware bring-up / feel-gate tools
+        test_kata_parity.py     replay suite guarding KataSense's behaviors
+        smoke_kata.py           the seed against stubbed hardware, CPython
         logs/                   sessions (gitignored: creatures/**/logs/)
 
 Deliberately NO sharing between conditions: a study variant is a frozen
-artifact, and editing a shared organs.py for condition_2 would silently
+artifact, and editing a shared kata_sense.py for condition_2 would silently
 rewrite what condition_1 *was*. Disk is cheap; contamination isn't. When
 two conditions genuinely must share a file, make the symlink between them
 explicitly — visible sharing over accidental coupling.
@@ -82,11 +85,8 @@ explicitly — visible sharing over accidental coupling.
 ## Making a condition
 
     cp -R creatures/kata_master/condition_1 creatures/kata_master/condition_2
-    # then edit what the study varies: organs (e.g. physics-based vs
-    # social-based senses), the seed, the character — anything.
-
-(`cp -R` on macOS copies the organs.py symlink as a symlink; since it is
-internal to the condition, the copy stays self-contained.)
+    # then edit what the study varies: the sense constants, the seed, the
+    # character — anything.
 
 ## Running a condition
 
@@ -94,9 +94,10 @@ internal to the condition, the copy stays self-contained.)
     tune  creatures/kata_master/condition_1                    # bring-up
     spine creatures/kata_master/condition_1 [--max-reflections N]  # session
 
-The sim bench replays a condition against its OWN organs:
+The offline bench replays the condition's own sense and seed on CPython:
 
-    creature-sim creatures/kata_master/condition_1 --imu <clip>
+    python creatures/kata_master/condition_1/test_kata_parity.py
+    python creatures/kata_master/condition_1/smoke_kata.py
 
 Remember: the device runs whatever was last FLASHED — switching conditions
 that differ in main.py/lib means reflashing; conditions that differ only
@@ -104,7 +105,10 @@ in seed/prompts can share a flash (the spine sends the seed per session).
 
 ## Tuner highlights (per condition: `tune creatures/kata_master/<cond>`)
 
-    deploy swoosh|tones|<path>   feel-gate seeds, live, no spine needed
+    deploy kata|swoosh|tones|<path>   seeds, live, no spine needed
+    stetho [ip|off]              arm the organ stream toward the laptop's
+                                 `stetho` dashboard (overlay — the running
+                                 deploy keeps going)
     synthcheck                   Grove 5V + TX-pin hunt (silent-synth triage)
     swooshvol / tonevol          volume sweeps with battery-sag readings
     mastervol / vbat / note / program / imulog / off
@@ -118,5 +122,6 @@ in seed/prompts can share a flash (the spine sends the seed per session).
 - The runtime self-reports every boot over the spine
   (`BOOT: cause=... vbat=...`) — spontaneous PWRON resets were traced to
   bench USB power (2026-07-13); battery operation is clean.
-- The calibration ladder that produced the organ constants lives in
-  `sim_creatures/kata-master/` (1_swoosh, 2_tones + recorded sessions).
+- The calibration ladder that produced the sense constants lives in
+  `sim_creatures/kata-master/` (1_swoosh, 2_tones + recorded sessions);
+  `test_kata_parity.py` replays its recorded scenarios against KataSense.

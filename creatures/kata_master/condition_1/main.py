@@ -3,23 +3,23 @@ main.py — M5StickS3 "kata_master" runtime (IMU + Grove SAM2695 GM synth).
 
 Same spine as the midi_dancer runtime — boots M5 hardware, brings up WiFi,
 opens a WebSocket to the spine, and runs an asyncio loop with heartbeat +
-instinct-hotswap tasks — with one structural addition: the KATA ORGANS.
-lib/organs.py (the same file the sim series runs) is attached to the instinct
-scope on every hot-swap, so the body senses — Kata (still->swift->still),
-Motion, Handling, Ear — live on the device, fed by the instinct's own Imu
-reads. Detection happens here, at the sensor, at full rate: WiFi stalls can
-no longer swallow a strike. The voice is the Unit-Synth (SAM2695) on the
-Grove port — MIDI over a wire, no network in the sound path.
+instinct-hotswap tasks. No organ layer: sensing lives with the instinct.
+KataSense (lib/kata_sense.py, validated by test_kata_parity.py) is handed
+into the instinct scope and constructed THERE, with the seed's own judgment
+numbers — mechanism in the library, judgment in the instinct. Detection
+happens at the sensor, at full rate: WiFi stalls cannot swallow a strike.
+The voice is the Unit-Synth (SAM2695) on the Grove port — MIDI over a wire,
+no network in the sound path.
 
 Runtime provides to instinct code:
-  send(msg), asyncio, time, struct, math, M5, Imu, Synth, Mem, Calc,
-  Kata, Motion, Handling, Ear   (via organs.attach)
+  send(msg), reflect(reason), asyncio, time, struct, math, M5, Imu, Synth,
+  mem (ONE plain dict, survives hot-swaps), Calc, KataSense
 
-Device-side libraries flashed to /lib (creatures/kata_master/lib/*.py):
+Device-side libraries flashed to /lib (creatures/kata_master/condition_1/lib/*.py):
   synth.py         -> Sam2695Synth  (the `Synth` voice, + pitch_bend)
-  organs.py        -> attach(scope) (the kata body senses)
-  creature_mem.py  -> Mem           (persistent named-slot memory)
   calc.py          -> Calc          (streaming signal toolkit)
+  kata_sense.py    -> KataSense     (the kata sense; judgment via constructor)
+  stethoscope.py   -> the bench organ stream (detached; see STETHO_HOST)
 """
 
 import M5
@@ -67,11 +67,10 @@ import struct
 import math
 from machine import Pin, I2C, PWM
 
-# ── The voice + toolkits + body senses ──────────────────────────────────────
+# ── The voice + toolkits + the kata sense ───────────────────────────────────
 from synth import Sam2695Synth
-from creature_mem import Mem as _MemClass
 from calc import Calc
-import organs
+from kata_sense import KataSense
 
 try:
     # On battery some M5 boards keep the Grove 5V rail off until asked —
@@ -94,9 +93,32 @@ except Exception as e:
     Synth = None
     print("synth: init failed:", e)
 
-# One Mem instance, created once and re-injected on every hot-swap so a
-# creature's sliding window survives instinct rewrites.
-Mem = _MemClass()
+# ── mem: what an instinct carries across its own rewrites ───────────────────
+#
+# ONE plain dict, module scope: it outlives every hot-swap and dies with the
+# power. The instinct holds the very dict this name holds, so a mutation is
+# persisted the instant it happens — there is nothing to flush and nothing to
+# restore, and because item assignment writes INTO the dict, even
+# mem["h_moves"] = [] persists. Keys are never deleted: a rewrite that merely
+# forgot one must not be able to destroy hours of accumulated history over a
+# typo. Instincts declare defaults with mem.setdefault(...) at the top of
+# run() — never in a loop, since the default is constructed on every call
+# and discarded when the key exists.
+MEM = {}
+_mem_shape = None      # sorted key list at the last swap, for the diff below
+
+
+def _announce_mem_shape():
+    """Journal it when the set of carried keys grew since the last swap, so
+    a later reflection can see WHEN its memory changed shape. Additive only:
+    nothing here (or anywhere) deletes keys."""
+    global _mem_shape
+    keys = sorted(MEM.keys())
+    if _mem_shape is not None:
+        gained = [k for k in keys if k not in _mem_shape]
+        if gained:
+            send("LOG: my memory changed shape — gained {}".format(gained))
+    _mem_shape = keys
 
 # ── Config ──────────────────────────────────────────────────────────────────
 # Prefer wifi.py if flashed alongside main.py; otherwise use defaults below.
@@ -118,6 +140,15 @@ except ImportError:
     CONFIG_SOURCE = "defaults"
 
 HEARTBEAT_INTERVAL = 5  # seconds
+
+STETHO_HOST = None      # the organ stream (UDP-OSC :9001 — advisory and
+                        # lossy; bench insight, never a data pipeline).
+                        # "spine": arm toward SPINE_HOST at boot; an
+                        # "x.x.x.x" string: toward that host; None: stay
+                        # detached until the tuner's `stetho` command arms
+                        # it by hand. Leave None for battery deployments —
+                        # on tilt the armed probes were the largest single
+                        # radio load on the body.
 
 # ── Display helper ─────────────────────────────────────────────────────────
 
@@ -312,8 +343,9 @@ INSTINCT_ENV = {
     "M5": M5,
     "Imu": Imu,
     "Synth": Synth,
-    "Mem": Mem,
+    "mem": MEM,
     "Calc": Calc,
+    "KataSense": KataSense,
 }
 
 DEFAULT_INSTINCT = """
@@ -325,14 +357,6 @@ async def run():
 
 async def run_instinct(code):
     env = dict(INSTINCT_ENV)
-    # The body senses: wraps Imu/Synth, adds Kata/Motion/Handling/Ear.
-    # Organ module state survives hot-swaps (module imported once); attach
-    # re-wraps the fresh scope exactly like the sim harness does.
-    try:
-        organs.attach(env)
-    except Exception as e:
-        send("CRASH:organs:{}".format(e))
-        print("organs: attach error:", e)
     try:
         exec(code, env)
     except Exception as e:
@@ -353,6 +377,7 @@ async def run_instinct(code):
 
 async def swap_instinct(code):
     global current_task
+    _announce_mem_shape()
     if current_task:
         current_task.cancel()
         try:
@@ -437,6 +462,19 @@ async def ws_listener():
         await swap_instinct(msg)
 
 
+def _arm_stetho():
+    """Arm the organ stream at boot, per the STETHO_HOST policy. Attach
+    state is RAM-only; the stethoscope module heals its own socket if the
+    WLAN bounces beneath it."""
+    if not STETHO_HOST:
+        return
+    try:
+        import stethoscope
+        stethoscope.attach(SPINE_HOST if STETHO_HOST == "spine" else STETHO_HOST)
+    except Exception as e:
+        print("stetho: arm failed:", e)
+
+
 async def main():
     await swap_instinct(DEFAULT_INSTINCT)
     asyncio.create_task(heartbeat())
@@ -478,4 +516,5 @@ else:
     show(["bad MODE: " + str(MODE)])
     raise ValueError("MODE must be 'ap' or 'sta'")
 
+_arm_stetho()
 asyncio.run(main())

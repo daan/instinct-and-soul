@@ -1,9 +1,10 @@
 """Runs the kata seed against stubbed hardware on CPython: pickup, a held
 pose, three cuts landing on three faces, a rest that closes the phrase and
 draws the echo, then a put-down that ends the run with a reflection."""
-import asyncio as _aio, math, time as _time, types, random
+import asyncio as _aio, math, os, sys, time as _time, types, random
 random.seed(3)
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 from calc import Calc
 from kata_sense import KataSense
 
