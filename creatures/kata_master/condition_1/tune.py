@@ -10,11 +10,48 @@ afford — every sound recipe reports battery-voltage sag while playing.
 Run:
     tune creatures/kata_master/condition_1
 
-Feel gates (the stage-1/2 calibration experiments, no spine needed):
+Recording, for tuning offline (nothing crosses the radio during a take):
+    record [label] [secs]           arm the recorder. BtnA on the board takes
+                                    one: three count-in ticks, then a CLICK +
+                                    white screen FLASH that is t=0 in the file
+                                    (sync your video on either), the take, then
+                                    two clicks to close it. Saved to flash as
+                                    rec_NNN.bin; press BtnA again for the next.
+                                    Label each take for what it IS — `record
+                                    still 20`, `record katas 20`, `record
+                                    noise 30` — the label rides in the header.
+                                    RAM bounds a take; the board reports how
+                                    many seconds it can hold when you arm it.
+    then, over USB:
+      uv run creatures/kata_master/condition_1/pull_recordings.py
+                                    copies every take off, converts to .jsonl
+                                    the sim/replay tools already read, and
+                                    reports whether the sampling was clean
+
+Deploy (no spine session needed):
     deploy kata                     the condition_1 kata seed, live
-    deploy swoosh                   the 1_swoosh gust seed, live
-    deploy tones                    the 2_tones rest-tone seed, live
     deploy <path>                   any seed file
+
+The feel gate — hand-tuning what a kata IS:
+    feel [knob=value ...]           the rest-tone gate: rest and hold, and
+                                    the face you are resting on sounds.
+                                    KataSense is the mechanism; every number
+                                    it judges by is a knob here. Knobs PERSIST
+                                    across commands, so you move one, listen,
+                                    move the next. Each deploy echoes the full
+                                    knob line, and the board reports the
+                                    speed01 distribution the thresholds sit in
+                                    — set them against that, not against a
+                                    guess. What you settle on gets typed into
+                                    seed_instinct.py's SENSE dict.
+    feel show                       the current knob line
+    feel reset                      back to the seed's numbers
+      the ladder     quiet spent rearm launch        (on speed01, 0..1)
+      the arc        dwell land_hold refract max_flight linger   (seconds)
+      full scale     rot_fs acc_fs      (SCALES the ladder — move first)
+      smoothing      speed_tau grav_tau act_tau      (seconds)
+      this gate      cone hold gap report vol
+    e.g.  feel quiet=0.15 dwell=0.25   rest sooner, on a quieter hand
 
 Live bench (run `stetho` in a second terminal for the dashboard):
     stetho [ip] | stetho off        arm/detach the organ stream (UDP-OSC
@@ -46,19 +83,70 @@ from recipes import RECIPES, INSTINCT_IDLE
 
 
 PLACEHOLDER = (
-    "deploy kata|swoosh|tones|<path> | stetho [ip|off] | synthcheck "
+    "record [label] [secs] | feel [knob=v ...] | feel show|reset "
+    "| deploy kata|<path> "
+    "| stetho [ip|off] | synthcheck "
     "| swooshvol | tonevol | swoosh [vol] [reps] | tones [vol] "
     "| mastervol [v] | vbat | note [ch] [n] [ms] [vel] "
     "| program [ch] [prog] | imulog | off"
 )
 
-# Seeds the tuner can deploy directly, no spine session needed: the real
-# kata seed, plus the stage-1/2 feel-gate experiments (whose sim series
-# stays the canonical source — the same files drive the offline bench).
+# Seeds the tuner can deploy directly, no spine session needed.
+#
+# A sim seed is NOT deployable here. It reads the sim's organ layer
+# (Kata/Motion/Handling, attached by organs.py); this runtime has no organ
+# layer — sensing lives with the instinct — so the board crashes the instant
+# the seed leaves its hello notes: `CRASH:name 'Kata' isn't defined`. The
+# sim series stays canonical for the OFFLINE bench only.
 DEPLOY_SHORTCUTS = {
     "kata": "creatures/kata_master/condition_1/seed_instinct.py",
-    "swoosh": "sim_creatures/kata-master/1_swoosh/seed_instinct.py",
-    "tones": "sim_creatures/kata-master/2_tones/seed_instinct.py",
+}
+
+# `deploy <name>` for a gate that is now a live-knob command, not a file.
+DEPLOY_MOVED = {
+    "tones": "the rest-tone gate is `feel` now — every KataSense number is "
+             "a knob on the line. try `feel` or `feel show`",
+    "swoosh": "the gust gate is still sim-only (needs Motion.fluency, which "
+              "KataSense has no equivalent for) — no board port yet",
+}
+
+# ── The knobs: what a kata IS, on the tuner line ────────────────────────────
+#
+# KataSense holds the mechanism and deliberately holds NO numbers of its own
+# (lib/kata_sense.py) — every threshold, dwell and timescale is a constructor
+# argument. That is precisely the surface a tuner exists to turn, so it lives
+# here: name -> (default, lo, hi). Defaults are seed_instinct.py's SENSE dict
+# plus the gate's own three; what you settle on gets typed back into the seed.
+#
+#   quiet/spent/rearm/launch  the ladder, on speed01 (the louder of rotation
+#                             and raw shove, each over its full scale)
+#   dwell/land_hold/refract/max_flight/linger    the times that turn crossings
+#                             into a still -> swift -> still ARC
+#   rot_fs/acc_fs             what counts as full speed: these SCALE the whole
+#                             ladder — move them before the thresholds, never
+#                             after, or every threshold has to be redone
+#   speed_tau/grav_tau/act_tau   smoothing: reaction lag vs jitter
+#   cone/hold/gap             this gate's own judgment (pose truth, patience)
+KNOBS = {
+    "quiet": (0.20, 0.01, 1.0),
+    "spent": (0.30, 0.01, 1.0),
+    "rearm": (0.55, 0.01, 1.0),
+    "launch": (0.75, 0.01, 1.0),
+    "dwell": (0.35, 0.0, 3.0),
+    "land_hold": (0.22, 0.0, 2.0),
+    "refract": (0.20, 0.0, 2.0),
+    "max_flight": (1.2, 0.1, 10.0),
+    "linger": (0.25, 0.0, 2.0),
+    "rot_fs": (600.0, 50.0, 4000.0),
+    "acc_fs": (25.0, 1.0, 200.0),
+    "speed_tau": (0.04, 0.001, 1.0),
+    "grav_tau": (0.12, 0.001, 2.0),
+    "act_tau": (2.0, 0.05, 30.0),
+    "cone": (25.0, 1.0, 90.0),
+    "hold": (0.30, 0.0, 3.0),
+    "gap": (0.5, 0.0, 5.0),
+    "report": (10.0, 2.0, 120.0),
+    "vol": (100, 1, 127),
 }
 
 
@@ -76,6 +164,51 @@ class KataMasterTuner(TuneAppBase):
         # their few lines to it, so arming the stethoscope doesn't kill the
         # seed you're watching.
         self._stream_code = INSTINCT_IDLE
+        # The knobs PERSIST across commands — that is what makes this hand
+        # tuning rather than re-typing: `feel quiet=0.15`, listen, `feel
+        # dwell=0.25`, listen, one number at a time, everything else held.
+        self.knobs = {k: v[0] for k, v in KNOBS.items()}
+
+    def knob_line(self):
+        """Every knob, changed ones starred. Long on purpose: this line is
+        the record of what you were hearing when you heard it."""
+        out = []
+        for name, (default, _lo, _hi) in KNOBS.items():
+            v = self.knobs[name]
+            out.append("{}{}={:g}".format("*" if v != default else "", name, v))
+        return " ".join(out)
+
+    def set_knobs(self, tokens):
+        """Apply `name=value` tokens, ALL of them or none: a typo in the
+        third knob must not leave the first two live on the board without
+        you knowing which state you are listening to. Returns True if
+        applied."""
+        staged = {}
+        for tok in tokens:
+            name, sep, raw = tok.partition("=")
+            name = name.lower()
+            if not sep:
+                self.log_msg("knobs are name=value — got {!r}".format(tok),
+                             style="yellow")
+                return False
+            if name not in KNOBS:
+                self.log_msg("no knob {!r}. knobs: {}".format(
+                    name, " ".join(KNOBS)), style="yellow")
+                return False
+            try:
+                v = float(raw)
+            except ValueError:
+                self.log_msg("{}: not a number: {!r}".format(name, raw),
+                             style="yellow")
+                return False
+            default, lo, hi = KNOBS[name]
+            cl = max(lo, min(hi, v))
+            if cl != v:
+                self.log_msg("{} clamped to [{:g}, {:g}]".format(name, lo, hi),
+                             style="yellow")
+            staged[name] = int(cl) if isinstance(default, int) else cl
+        self.knobs.update(staged)
+        return True
 
     def compose(self) -> ComposeResult:
         yield Static("● disconnected", id="status")
@@ -107,7 +240,10 @@ class KataMasterTuner(TuneAppBase):
         try:
             if cmd == "deploy":
                 if len(parts) < 2:
-                    self.log_msg("deploy what? swoosh | tones | <path to seed>", style="yellow")
+                    self.log_msg("deploy what? kata | <path to seed>", style="yellow")
+                    return
+                if parts[1] in DEPLOY_MOVED:
+                    self.log_msg(DEPLOY_MOVED[parts[1]], style="yellow")
                     return
                 path = DEPLOY_SHORTCUTS.get(parts[1], parts[1])
                 try:
@@ -146,6 +282,44 @@ class KataMasterTuner(TuneAppBase):
                            + self._stream_code
                     self.log_msg("organ stream -> {}:9001 — run `stetho` in "
                                  "another terminal".format(ip), style="cyan")
+
+            elif cmd == "record":
+                label = "take"
+                secs = 30.0
+                for tok in parts[1:]:
+                    try:
+                        secs = max(1.0, min(600.0, float(tok)))
+                    except ValueError:
+                        # a label, not a duration. It is written into the
+                        # file header and into generated source, so it is
+                        # kept to characters that can be neither.
+                        label = "".join(c for c in tok
+                                        if c.isalnum() or c in "_-")[:15]
+                        if not label:
+                            self.log_msg("label must have letters or digits",
+                                         style="yellow")
+                            return
+                code = format_recipe(RECIPES["record"], label=label,
+                                     secs=secs, hz=200)
+                self.log_msg("recorder armed — label '{}', {:.0f}s takes at "
+                             "200 Hz. BtnA on the board starts a take; three "
+                             "ticks count you in, then CLICK+FLASH is t=0. "
+                             "Pull them with: uv run creatures/kata_master/"
+                             "condition_1/pull_recordings.py".format(
+                                 label, secs), style="cyan")
+
+            elif cmd == "feel":
+                rest = parts[1:]
+                if rest and rest[0].lower() in ("show", "?"):
+                    self.log_msg(self.knob_line(), style="cyan")
+                    return
+                if rest and rest[0].lower() == "reset":
+                    self.knobs = {k: v[0] for k, v in KNOBS.items()}
+                    rest = rest[1:]
+                if not self.set_knobs(rest):
+                    return          # a bad knob changes NOTHING and deploys
+                code = format_recipe(RECIPES["feel"], **self.knobs)
+                self.log_msg("feel: " + self.knob_line(), style="cyan")
 
             elif cmd == "synthcheck":
                 code = format_recipe(RECIPES["synthcheck"])

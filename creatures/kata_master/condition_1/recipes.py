@@ -287,4 +287,393 @@ async def run():
         await asyncio.sleep_ms(10)
 """,
     },
+    # THE RECORDER — a raw IMU trace on flash, for tuning offline.
+    #
+    # Nothing crosses the radio during a take: the WebSocket brings the
+    # recipe in and carries the summary out, and everything between is the
+    # board alone with its own clock. The trace comes off over USB
+    # afterwards (pull_recordings.py), which is also what makes it a
+    # RECORD — the same bytes replay through KataSense as many times as a
+    # threshold sweep needs, where a live session can never be re-performed.
+    #
+    # RAM-first, deliberately: the whole take is packed into one
+    # preallocated buffer and written to flash once, at the end. A flash
+    # write mid-take stalls tens of milliseconds, and a stall during a
+    # strike is exactly the sample you cannot afford to lose. The price is
+    # that RAM bounds the take — the recipe measures free memory, reports
+    # the seconds it can hold, and caps rather than truncating silently.
+    #
+    # Every take is bracketed by a SYNC MARK — a wood-block click and a
+    # white screen flash issued at the same instant, whose tick IS the
+    # file's t=0 — and closed by two of them. Line the camera up on either:
+    # the click if the audio is clean, the flash if the room is loud. The
+    # end mark carries the drift between the board's clock and the camera's.
+    "record": {
+        "args": [("label", str, "take"), ("secs", float, 30.0),
+                 ("hz", int, 200)],
+        "code": """
+async def run():
+    import gc
+    import os
+
+    LABEL = "{label}"
+    SECS = {secs}
+    HZ = {hz}
+    PERIOD_US = int(1000000.0 / HZ)
+    REC = 28              # per sample: t_us uint32 + ax..gz float32
+    HDR = 64
+    HEADROOM = 40000      # bytes of RAM left for the runtime to breathe
+    CLICK_CH = 9          # GM percussion: sharp attack, program-independent
+    TICK, SYNC = 77, 76   # low wood block (count-in) / high (the mark)
+
+    def click(note, ms=70, vel=127):
+        try:
+            Synth.note(CLICK_CH, note, ms, vel)
+        except Exception:
+            pass
+
+    def screen(white, msg=None):
+        try:
+            M5.Display.fillScreen(0xFFFFFF if white else 0x000000)
+            if msg:
+                M5.Display.drawString(msg, 5, 10)
+        except Exception:
+            pass
+
+    def free_flash(d):
+        try:
+            st = os.statvfs(d)
+            return st[0] * st[3]
+        except Exception:
+            return -1
+
+    def next_index(d):
+        n = 0
+        try:
+            for f in os.listdir(d):
+                if f[:4] == "rec_" and f[-4:] == ".bin":
+                    try:
+                        v = int(f[4:7])
+                        if v > n:
+                            n = v
+                    except ValueError:
+                        pass
+        except Exception:
+            pass
+        return n + 1
+
+    # where the traces land: /flash if this build has it, else the root
+    DIR = "/"
+    try:
+        os.listdir("/flash")
+        DIR = "/flash"
+    except Exception:
+        pass
+
+    # THE IMU MUST BE ALIVE BEFORE ANYTHING IS ARMED. Take aug20_1
+    # (2026-08-20) was 2000 samples of perfect 5 ms timestamps and six flat
+    # zero channels: the sampler read a dead Imu without noticing, and a
+    # filmed kata session was spent recording nothing. Zeros are not an
+    # exception, so they must be CHECKED — and the check is free: gravity
+    # never sleeps, so |a| ~ 0 g on a resting board is not a reading, it is
+    # a dead instrument.
+    alive = False
+    for _ in range(10):
+        a = Imu.getAccel()
+        if abs(a[0]) + abs(a[1]) + abs(a[2]) > 0.5:
+            alive = True
+            break
+        await asyncio.sleep_ms(50)
+    if not alive:
+        send("record: REFUSING to arm — the IMU reads all zeros (a resting "
+             "board must see ~1 g somewhere). Reboot the stick and rerun.")
+        screen(False, "IMU DEAD")
+        return
+
+    Synth.all_off()
+    gc.collect()
+    free = gc.mem_free()
+    cap = int((free - HEADROOM) / REC)
+    if cap < HZ:
+        send("record: {{}} B free — no room for even a second".format(free))
+        screen(False, "NO RAM")
+        return
+    want = int(SECS * HZ)
+    if want > cap:
+        send("record: RAM holds {{:.1f}}s at {hz} Hz, not {secs}s — capping"
+             .format(cap / float(HZ)))
+        want = cap
+    buf = bytearray(want * REC)
+
+    send("record '{label}': ready for {{:.1f}}s takes at {hz} Hz "
+         "({{}} samples, {{}} B RAM, {{}} B free on {{}}). BtnA starts a "
+         "take: 3 count-in ticks, then CLICK+FLASH is t=0.".format(
+             want / float(HZ), want, want * REC, free_flash(DIR), DIR))
+    screen(False, "ARM: BtnA")
+
+    while True:
+        M5.update()
+        if not M5.BtnA.wasPressed():
+            await asyncio.sleep_ms(20)
+            continue
+
+        # ── count-in: three low ticks, one per second ────────────────────
+        for i in range(3):
+            click(TICK, 50, 100)
+            screen(False, "{{}}...".format(3 - i))
+            await asyncio.sleep_ms(1000)
+
+        # ── THE SYNC MARK: click and flash together, and this tick is t=0 ─
+        screen(True)
+        click(SYNC, 90, 127)
+        t0 = time.ticks_us()
+
+        n = 0
+        prev = t0
+        next_us = t0
+        max_gap = 0
+        gaps = 0
+        dead = 0     # samples where every channel read exactly zero
+        lit = True
+        while n < want:
+            now = time.ticks_us()
+            if time.ticks_diff(now, next_us) >= 0:
+                a = Imu.getAccel()
+                g = Imu.getGyro()
+                if a[0] == 0.0 and a[1] == 0.0 and a[2] == 0.0 and \
+                        g[0] == 0.0 and g[1] == 0.0 and g[2] == 0.0:
+                    dead += 1
+                if n:
+                    dt = time.ticks_diff(now, prev)
+                    if dt > max_gap:
+                        max_gap = dt
+                    if dt > PERIOD_US + PERIOD_US // 2:
+                        gaps += 1
+                prev = now
+                struct.pack_into("<Iffffff", buf, n * REC,
+                                 time.ticks_diff(now, t0),
+                                 a[0], a[1], a[2], g[0], g[1], g[2])
+                n += 1
+                next_us = time.ticks_add(next_us, PERIOD_US)
+                # fallen far behind (a long stall): resync rather than
+                # firing a catch-up burst of samples at the wrong times
+                if time.ticks_diff(now, next_us) > PERIOD_US * 4:
+                    next_us = time.ticks_add(now, PERIOD_US)
+            elif lit and time.ticks_diff(now, t0) > 120000:
+                screen(False, "REC")   # the flash is over; the screen is
+                lit = False            # then left alone — no jitter
+            await asyncio.sleep_ms(0)
+
+        # ── the end mark: two clicks, so the take is bracketed ───────────
+        end_us = time.ticks_diff(time.ticks_us(), t0)
+        screen(True)
+        click(SYNC, 90, 127)
+        await asyncio.sleep_ms(160)
+        click(SYNC, 90, 127)
+        await asyncio.sleep_ms(160)
+        screen(False, "saving")
+
+        idx = next_index(DIR)
+        path = "{{}}/rec_{{:03d}}.bin".format("" if DIR == "/" else DIR, idx)
+        hdr = bytearray(HDR)
+        hdr[0:8] = b"KATAREC1"
+        struct.pack_into("<HIIIIII", hdr, 8, HZ, n, end_us,
+                         time.ticks_ms(), max_gap, gaps, PERIOD_US)
+        lb = LABEL.encode()[:16]
+        hdr[48:48 + len(lb)] = lb
+        try:
+            f = open(path, "wb")
+            f.write(hdr)
+            f.write(memoryview(buf)[:n * REC])
+            f.close()
+        except Exception as e:
+            send("record: SAVE FAILED {{}}: {{}}".format(path, e))
+            screen(False, "SAVE FAIL")
+            await asyncio.sleep_ms(2000)
+            screen(False, "ARM: BtnA")
+            continue
+
+        send("record: {{}} '{label}' {{}} samples {{:.1f}}s | worst gap "
+             "{{:.1f}} ms, {{}} late (nominal {{:.1f}}) | flash free {{}} B"
+             .format(path, n, end_us / 1000000.0, max_gap / 1000.0, gaps,
+                     PERIOD_US / 1000.0, free_flash(DIR)))
+        if dead == n:
+            send("record: WARNING — every sample read all-zero. The take is "
+                 "saved but it is a dead instrument's diary. Reboot and redo.")
+            screen(False, "ALL ZERO!")
+            await asyncio.sleep_ms(2500)
+        elif dead > n // 10:
+            send("record: WARNING — {{}} of {{}} samples read all-zero"
+                 .format(dead, n))
+        screen(False, "SAVED {{:03d}}".format(idx))
+        await asyncio.sleep_ms(1500)
+        screen(False, "ARM: BtnA")
+        M5.update()
+        M5.BtnA.wasPressed()   # swallow a bounce so the next take is yours
+""",
+    },
+    # The rest-tone gate, with EVERY judgment number on the tuner line.
+    # KataSense already holds the mechanism (lib/kata_sense.py, replayed by
+    # test_kata_parity.py); it deliberately holds no numbers of its own, so
+    # the thing left to find on a real hand is exactly the constructor —
+    # which is what this recipe hands to the tuner. `feel quiet=0.15` is one
+    # keystroke and one deploy from your hand, and the window report carries
+    # the speed01 distribution the thresholds are set AGAINST, so the knobs
+    # get moved on evidence rather than on feel-of-a-feel.
+    "feel": {
+        "args": [("quiet", float, 0.20), ("spent", float, 0.30),
+                 ("rearm", float, 0.55), ("launch", float, 0.75),
+                 ("dwell", float, 0.35), ("land_hold", float, 0.22),
+                 ("refract", float, 0.20), ("max_flight", float, 1.2),
+                 ("linger", float, 0.25), ("rot_fs", float, 600.0),
+                 ("acc_fs", float, 25.0), ("speed_tau", float, 0.04),
+                 ("grav_tau", float, 0.12), ("act_tau", float, 2.0),
+                 ("cone", float, 25.0), ("hold", float, 0.30),
+                 ("gap", float, 0.5), ("report", float, 10.0),
+                 ("vol", int, 100)],
+        "code": """
+async def run():
+    # THE REST-TONE GATE. Sounds exactly ONE thing: a STABLE REST POSITION,
+    # the moment it is detected. No swoosh, no strike coupling. Move however
+    # you like: silence. Come to rest and hold: that face's tone, once. Roll
+    # slowly to another face while at rest: its tone, once. Leave rest and
+    # come back: the tone again. Inside `cone` of a true axis the tone rings
+    # full; outside it lands as a dull smudge — the cone edge stays feelable.
+    #
+    # Faces, mounted on the back of the hand with X toward the wrist:
+    #   X- fingers up -> C5    X+ fingers down -> C4
+    #   Z+ palm down  -> E4    Z- palm up      -> G4
+    #   Y+/Y- hand blade (chop pose) -> D4 / A4  (which edge is which sign
+    #   depends on the hand it rides — label it from the first session)
+    SENSE = dict(quiet={quiet}, spent={spent}, rearm={rearm},
+                 launch={launch}, set_dwell_s={dwell},
+                 land_hold_s={land_hold}, refract_s={refract},
+                 max_flight_s={max_flight}, set_linger_s={linger},
+                 rot_fs={rot_fs}, acc_fs={acc_fs},
+                 speed_tau_s={speed_tau}, grav_tau_s={grav_tau},
+                 act_tau_s={act_tau})
+    CONE_DEG = {cone}      # a rest within this of orthogonal is TRUE
+    FACE_HOLD_S = {hold}   # the face must persist this long at rest
+    REST_GAP_S = {gap}     # a shorter absence doesn't re-arm the same face
+    TONES = {{"X-": 72, "X+": 60, "Z+": 64, "Z-": 67, "Y+": 62, "Y-": 69}}
+
+    sense = KataSense(Calc, **SENSE)
+    # Rest is the sense's own "set" band, rebuilt out here where this gate
+    # can read it: state False = fallen below `quiet` and held `dwell`. The
+    # dead band up to `spent` lets a landing hover keep counting as a pose.
+    # Latency from stopping to tone is dwell + hold; if that feels sluggish
+    # live, those are the two knobs, in that order.
+    set_g = Calc.Gate(SENSE["quiet"], SENSE["spent"], rise_hold_s=0.0,
+                      fall_hold_s=SENSE["set_dwell_s"])
+
+    CH = 2
+    Synth.all_off()
+    Synth.program(CH, 11)               # vibraphone: a struck tone that rings
+    Synth.control_change(CH, 11, 127)   # never trust inherited CC state: the
+    Synth.control_change(CH, 7, {vol})  # gust seeds zero expression and the
+    Synth.pitch_bend(CH, 0)             # vol sweeps leave CC7 anywhere
+    Synth.note(CH, 60, 150, 90)         # hello: a rising third. silence here
+    await asyncio.sleep_ms(200)         # is the synth path, not the gate
+    Synth.note(CH, 64, 250, 90)
+    send("feel: quiet={quiet} spent={spent} dwell={dwell} hold={hold} "
+         "cone={cone} gap={gap} — rest and hold to sound a face")
+
+    sounded = None       # face already sounded for the current rest
+    unset_since = None   # when rest was left (None while resting)
+    cand = None          # (face, since) awaiting FACE_HOLD_S
+
+    win_start = time.ticks_ms() / 1000.0
+    offs = {{}}          # face -> [off_deg, ...] this window
+    inside = 0
+    outside = 0
+    ticks = 0
+    rest_ticks = 0
+    s_peak = 0.0         # loudest speed01 this window
+    s_rest = 0.0         # loudest speed01 while AT REST — the number `quiet`
+                         # has to clear: if it approaches quiet, rest breaks
+    nl = 0               # the ladder's own events, counted but never sounded
+    nd = 0               # at this stage: launches / lands / overruns
+    no = 0
+
+    while True:
+        now = time.ticks_ms() / 1000.0
+        a = Imu.getAccel()
+        g = Imu.getGyro()
+
+        ev = sense.step(a, g, now)
+        set_g.update(sense.speed01, now)
+        at_rest = not set_g.state
+        s = sense.speed01
+        ticks += 1
+        if s > s_peak:
+            s_peak = s
+        if ev is not None:
+            if ev[0] == "launch":
+                nl += 1
+            elif ev[0] == "land":
+                nd += 1
+            else:
+                no += 1
+
+        if at_rest:
+            rest_ticks += 1
+            if s > s_rest:
+                s_rest = s
+            unset_since = None
+            face, off = sense.pose()
+            if face is None:
+                cand = None
+            elif cand is None or cand[0] != face:
+                cand = (face, now)
+            elif now - cand[1] >= FACE_HOLD_S and face != sounded:
+                # a stable rest position, newly reached: sound it NOW
+                note = TONES.get(face, 60)
+                if off <= CONE_DEG:
+                    Synth.note(CH, note, 600, 95)
+                    inside += 1
+                else:            # the smudge: same tone, dull and short —
+                    Synth.note(CH, note, 120, 40)    # the cone edge, felt
+                    outside += 1
+                offs.setdefault(face, []).append(off)
+                sounded = face
+        else:
+            cand = None
+            if unset_since is None:
+                unset_since = now
+            elif now - unset_since > REST_GAP_S:
+                sounded = None   # a real departure: the next rest sounds
+
+        # THE EVIDENCE the knobs get moved on: where the rests landed, how
+        # far off, and the speed01 distribution the thresholds sit in.
+        if now - win_start > {report}:
+            if offs:
+                per_face = " ".join(
+                    "{{}}:{{}} med {{:.0f}} max {{:.0f}}".format(
+                        f, len(v), sorted(v)[len(v) // 2], max(v))
+                    for f, v in sorted(offs.items()))
+                stats = ("{{}} in / {{}} out of {cone} deg | off_deg {{}}"
+                         .format(inside, outside, per_face))
+            else:
+                stats = "NO RESTS SOUNDED"
+            send("feel {{:.0f}}s: {{}} | speed01 peak {{:.2f}} rest-max "
+                 "{{:.3f}} (quiet {quiet}) | at rest {{:.0f}}% | ladder "
+                 "{{}}L/{{}}D/{{}}O | pose {{}} act {{:.1f}}".format(
+                     now - win_start, stats, s_peak, s_rest,
+                     100.0 * rest_ticks / max(1, ticks), nl, nd, no,
+                     sense.pose(), sense.activity))
+            win_start = now
+            offs = {{}}
+            inside = 0
+            outside = 0
+            ticks = 0
+            rest_ticks = 0
+            s_peak = 0.0
+            s_rest = 0.0
+            nl = 0
+            nd = 0
+            no = 0
+
+        await asyncio.sleep_ms(5)    # 200 Hz polling
+""",
+    },
 }

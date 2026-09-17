@@ -1,6 +1,8 @@
 *.swp
 .DS_Store
 __pycache__/
+recordings
+
 
 # Per-creature session logs — contain interaction data + Claude reflections.
 # ** matches any depth so logs under experiment subfolders (e.g.

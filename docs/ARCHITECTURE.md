@@ -1,9 +1,9 @@
-# ARCHITECTURE — the three data movements
 
-Written 2026-07-08, after the step-back. When the project feels like it is
-overcomplicating itself, check the feeling against this document.
+A creature is a physical artifact combining sensors, actuators, and a Wi-Fi-enabled microcontroller. A creature plans, but never within the perception–action loop: reflection runs asynchronously while sensing and acting stay directly coupled.
+Soul, an LLM, reached through a gateway (spine) writes creatures firmware (instinct code) based on the creatures journal. Spine logs 
 
-A creature is a body (instinct + organs on some substrate), a soul (LLM,
+
+A creature is a body (instinct + senses on some substrate), a soul (LLM,
 reached through a gateway), and a person. Between them there are exactly
 **three data movements**, and every piece of infrastructure belongs to one:
 
@@ -59,14 +59,26 @@ experiments — not the destiny of the runtime.
 | core (keep investing) | scaffolding (feature-frozen) |
 |---|---|
 | session format (store_format 2) | OSC IMU streaming pipeline |
-| organs (MicroPython-portable by construction) | sim clock-freeze machinery |
+| sense components (mechanism in lib, judgment in the seed) | sim clock-freeze machinery |
 | instinct contract, journal/trigger semantics | live PC synth (until on-device sound) |
 | tracer as playback instrument | full wire-protocol spec (drawer) |
 | the stethoscope (movement 3, minimal) | web trajectory scope, hot-reload tuner |
 
-Known debt, deliberately unpaid for now: per-creature `organs.py` files are
-copies (the per-creature-body principle is right; the copying is not) — a
-shared organ library with per-creature composition is the eventual fix.
+**The organ layer is retired** (2026-08, tilt condition_4 and kata_master
+condition_1): pre-cooked organs decided upstream what an event WAS, and
+that judgment kept turning out to be partly wrong. The replacement pattern
+is the sense component — KataSense is the model: the class holds NO numbers
+of its own, every threshold and timescale arrives as a constructor argument
+from the seed, so a reflection can retune what a kata IS without touching
+validated mechanism. Fixed structure lives in `lib/` behind a replay suite
+(`test_kata_parity.py`); events are born wherever the instinct's own code
+taps them. The stethoscope keeps its `/organ/<kind>` wire format — the
+vocabulary is just no longer fixed by an organ layer.
+
+Known debt, deliberately unpaid for now: per-creature `lib/` files
+(calc.py, kata_sense.py, stethoscope.py) are copies (the per-creature-body
+principle is right; the copying is not) — a shared library with
+per-creature composition is the eventual fix.
 
 ## Priorities (2026-07)
 
